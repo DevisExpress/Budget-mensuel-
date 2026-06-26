@@ -24,6 +24,186 @@
 <div class="modal" id="ioModal"><div class="sheet"><div class="handle"></div><div class="mtitle" id="ioTitle">Exporter</div><div class="field"><label id="ioLabel">JSON</label><textarea id="ioText" style="height:170px;resize:none;font-size:12px"></textarea></div><div class="btns"><button class="btn secondary" id="btnCloseIO">Fermer</button><button class="btn primary" id="ioBtn">Importer</button></div></div></div>
 <div class="modal" id="infoModal"><div class="sheet info-sheet"><div class="handle"></div><div class="mtitle" id="infoTitle">Détail</div><div id="infoBody"></div><div class="btns"><button class="btn primary" id="btnCloseInfo">Fermer</button></div></div></div>
 <div class="toast" id="toast"></div>
+
+<!-- ORION V2 Foundation - Filet de sécurité backup automatique -->
+<script>
+(function () {
+  'use strict';
+
+  var CFG = {
+    MAX_BACKUPS: 12,
+    AUTOSAVE_MIN_INTERVAL: 10 * 60 * 1000,
+    PREFIX: 'bgt4_bak_',
+    INDEX: 'bgt4_bak_index',
+    WATCH: ['bgt4', 'bgt4_cats', 'budgetV3', 'budgetV2']
+  };
+
+  if (window.BudgetBackup && window.BudgetBackup.__v) return;
+
+  var LS = window.localStorage;
+  var origSet = LS.setItem.bind(LS);
+  var origRemove = LS.removeItem.bind(LS);
+  var lastAutosave = 0;
+
+  function hash(str) {
+    str = String(str || '');
+    var h = 5381;
+    for (var i = str.length - 1; i >= 0; i--) h = (h * 33) ^ str.charCodeAt(i);
+    return (h >>> 0).toString(36);
+  }
+
+  function readIndex() {
+    try { return JSON.parse(LS.getItem(CFG.INDEX) || '[]') || []; }
+    catch (e) { return []; }
+  }
+
+  function writeIndex(idx) {
+    try { origSet(CFG.INDEX, JSON.stringify(idx)); } catch (e) {}
+  }
+
+  function buildPayload() {
+    var data = {
+      _orion_backup: 1,
+      version: 1,
+      ts: new Date().toISOString(),
+      keys: {}
+    };
+    CFG.WATCH.forEach(function (k) {
+      var v = LS.getItem(k);
+      if (v !== null) data.keys[k] = v;
+    });
+    return data;
+  }
+
+  function prune() {
+    var idx = readIndex();
+    idx.sort(function (a, b) { return a.ts < b.ts ? -1 : 1; });
+    while (idx.length > CFG.MAX_BACKUPS) {
+      var old = idx.shift();
+      try { origRemove(old.k); } catch (e) {}
+    }
+    writeIndex(idx);
+    return idx;
+  }
+
+  function snapshot(reason) {
+    try {
+      if (LS.getItem('bgt4') === null && LS.getItem('budgetV3') === null && LS.getItem('budgetV2') === null) {
+        return { skipped: 'aucune-donnee' };
+      }
+
+      var payload = buildPayload();
+      var blob = JSON.stringify(payload);
+      var h = hash(JSON.stringify(payload.keys));
+      var idx = readIndex();
+
+      if (idx.length) {
+        var last = idx[idx.length - 1];
+        if (last && last.h === h) return { skipped: 'identique', key: last.k };
+      }
+
+      var key = CFG.PREFIX + Date.now();
+      var entry = { k: key, ts: payload.ts, reason: reason || 'manuel', h: h, bytes: blob.length };
+
+      try {
+        origSet(key, blob);
+      } catch (e) {
+        var i2 = readIndex().sort(function (a, b) { return a.ts < b.ts ? -1 : 1; });
+        if (i2.length) {
+          try { origRemove(i2[0].k); } catch (e2) {}
+          i2.shift();
+          writeIndex(i2);
+        }
+        origSet(key, blob);
+      }
+
+      idx.push(entry);
+      writeIndex(idx);
+      prune();
+      return { ok: true, key: key, reason: entry.reason, bytes: entry.bytes };
+    } catch (e) {
+      try { console.warn('[BudgetBackup] snapshot impossible :', e && e.message); } catch (e2) {}
+      return { error: e && e.message };
+    }
+  }
+
+  function list() {
+    return readIndex().slice().sort(function (a, b) { return a.ts < b.ts ? 1 : -1; }).map(function (e) {
+      return { cle: e.k, date: e.ts, raison: e.reason, taille: e.bytes + ' o' };
+    });
+  }
+
+  function restore(key, opts) {
+    opts = opts || {};
+    var raw = LS.getItem(key);
+    if (raw === null) return { error: 'introuvable' };
+
+    var payload;
+    try { payload = JSON.parse(raw); } catch (e) { return { error: 'illisible' }; }
+    if (!payload || !payload._orion_backup || !payload.keys) return { error: 'format-invalide' };
+
+    snapshot('avant-restauration');
+    CFG.WATCH.forEach(function (k) {
+      try { origRemove(k); } catch (e) {}
+    });
+    Object.keys(payload.keys).forEach(function (k) {
+      try { origSet(k, payload.keys[k]); } catch (e) {}
+    });
+
+    console.info('[BudgetBackup] Restauré depuis', key, '→', payload.ts);
+    if (opts.reload !== false && typeof location !== 'undefined') location.reload();
+    return { ok: true, restoredFrom: key, ts: payload.ts };
+  }
+
+  function exportAll() {
+    var out = { exported: new Date().toISOString(), backups: [] };
+    readIndex().forEach(function (e) {
+      var raw = LS.getItem(e.k);
+      if (raw !== null) out.backups.push({ key: e.k, reason: e.reason, payload: raw });
+    });
+    return JSON.stringify(out, null, 2);
+  }
+
+  function info() {
+    var idx = readIndex();
+    var total = idx.reduce(function (s, e) { return s + (e.bytes || 0); }, 0);
+    return { sauvegardes: idx.length, max: CFG.MAX_BACKUPS, octets_total: total };
+  }
+
+  LS.removeItem = function (key) {
+    try { if (CFG.WATCH.indexOf(key) !== -1) snapshot('avant-effacement'); } catch (e) {}
+    return origRemove(key);
+  };
+
+  LS.setItem = function (key, value) {
+    var r = origSet(key, value);
+    try {
+      if (key === 'bgt4') {
+        var now = Date.now();
+        if (now - lastAutosave >= CFG.AUTOSAVE_MIN_INTERVAL) {
+          lastAutosave = now;
+          snapshot('autosave');
+        }
+      }
+    } catch (e) {}
+    return r;
+  };
+
+  window.BudgetBackup = {
+    __v: '1.0',
+    snapshot: snapshot,
+    list: list,
+    restore: restore,
+    exportAll: exportAll,
+    info: info,
+    prune: prune
+  };
+
+  try { snapshot('ouverture-session'); } catch (e) {}
+  try { console.info('[BudgetBackup] Filet de sécurité actif —', info().sauvegardes, 'sauvegarde(s).'); } catch (e) {}
+})();
+</script>
+
 <script>
 (function(){'use strict';
 var ML=['Janvier','Fevrier','Mars','Avril','Mai','Juin','Juillet','Aout','Septembre','Octobre','Novembre','Decembre'],MS=['Jan','Fev','Mar','Avr','Mai','Jun','Jul','Aou','Sep','Oct','Nov','Dec'];
