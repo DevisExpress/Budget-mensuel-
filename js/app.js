@@ -1,5 +1,4 @@
-/* ═══════════════════════════════════════════════════════════════════════
-   (function(){
+(function(){
 'use strict';
 /* ═══════════════════════════════════════════════════════════════════════
    ORION v21 — app.js
@@ -269,6 +268,39 @@ function generateMissing(key){ // bouton de secours : ajoute seulement le manqua
   return added;
 }
 function seedTemplatesFromMonth(key){ return seedTemplatesInto(app,key); }
+/* ── Bascule vers le mois suivant ────────────────────────────────────────
+   Copie les opérations RÉCURRENTES actives du mois courant vers le mois
+   suivant (gère déc→jan), sans doublon, statut remis à "Prévu". Les
+   opérations ponctuelles (sans modèle) ou terminées (échéancier fini /
+   hors période) ne sont pas copiées. N'écrase jamais l'existant. */
+function nextKeyOf(y,mo){ let m2=mo+1,y2=y; if(m2>11){m2=0;y2++;} return {y:y2,mo:m2,key:pkey(y2,m2)}; }
+function rollToNextMonth(){
+  let cur=m();
+  let nx=nextKeyOf(year,month);
+  app.monthlyData=app.monthlyData||{};
+  let created=!app.monthlyData[nx.key];
+  let target=app.monthlyData[nx.key]||{income:[],expenses:[],savings:{amount:0,paid:false,date:''},meta:{note:''}};
+  app.monthlyData[nx.key]=target;
+  let added=0;
+  function copyList(src,dst,kind){
+    (src||[]).forEach(op=>{
+      if(!op.templateId)return;                              // ponctuelle : ignorée
+      let tpl=findTpl(op.templateId);
+      if(tpl && tplOccurrence(tpl,nx.key)==null)return;      // terminée / hors période : ignorée
+      if(dst.some(o=>o.templateId===op.templateId||(o.name||'').toLowerCase()===(op.name||'').toLowerCase()))return; // pas de doublon
+      let day=op.dueDate?(Number(String(op.dueDate).split('-')[2])||1):(tpl?tpl.dueDay:1);
+      dst.push({name:op.name,amount:num(op.amount),cat:op.cat||'autres',paid:false,paidDate:'',
+        dueDate:kind==='income'?'':nx.key+'-'+p2(Math.min(Math.max(1,day),lastDay(nx.key))),
+        auto:kind==='income'?!!op.auto:false,templateId:op.templateId,recurring:true,createdPeriod:op.createdPeriod||curKey()});
+      added++;
+    });
+  }
+  copyList(cur.income,target.income,'income');
+  copyList(cur.expenses,target.expenses,'expense');
+  if(created&&added===0){ delete app.monthlyData[nx.key]; } // ne pas laisser un mois vide
+  else save();
+  return {added:added,key:nx.key,y:nx.y,mo:nx.mo};
+}
 
 /* ── Calculs (recalcul instantané) ───────────────────────────────────── */
 function m(){return ensureKey(curKey());}
@@ -408,6 +440,7 @@ function renderTransactions(){
       +'<select class="pn-select" id="monthPick" aria-label="Mois">'+ML.map((x,i)=>'<option value="'+i+'"'+(i===month?' selected':'')+'>'+x+'</option>').join('')+'</select>'
       +'<select class="pn-select" id="yearPick" aria-label="Année">'+yearOptions()+'</select>'
       +'<button class="pn-arrow" data-period="next" aria-label="Mois suivant">›</button></div>'
+    +'<button class="secondary" id="rollNextBtn" style="width:100%;margin-bottom:12px">Basculer vers le mois suivant</button>'
     +'<div class="tabs"><button class="tab '+(filter==='all'?'active':'')+'" data-filter="all">Tout</button><button class="tab '+(filter==='income'?'active':'')+'" data-filter="income">Revenus</button><button class="tab '+(filter==='expense'?'active':'')+'" data-filter="expense">Dépenses</button><button class="tab sort'+(sortMode==='due'?' active':'')+'" data-sort="toggle">Échéance</button></div>'
     +dueLegend()
     +(rows.length?rows.map(o=>txRow(o.r,o.type,o.idx)).join(''):'<p class="empty">Aucune ligne pour ce filtre.</p>')
@@ -616,6 +649,7 @@ document.addEventListener('click',e=>{
     case 'btnRefresh': app=load();goals=loadGoals();render();return;
     case 'exportBtn': return doExport();
     case 'genRecurBtn': {let n=generateMissing(curKey());render();alert(n>0?(n+' opération(s) récurrente(s) ajoutée(s).'):'Ce mois contient déjà toutes les opérations récurrentes actives.');return;}
+    case 'rollNextBtn': {let r=rollToNextMonth();render();alert(r.added>0?(r.added+' opération'+(r.added>1?'s ont':' a')+' été basculée'+(r.added>1?'s':'')+' vers '+ML[r.mo]+' '+r.y+'.'):('Aucune opération récurrente à basculer vers '+ML[r.mo]+' '+r.y+' (déjà à jour).'));return;}
     case 'importBtn': return doImport();
     case 'reloadBtn': if(confirm('Recharger les données depuis le stockage ?')){app=load();goals=loadGoals();render();} return;
   }
