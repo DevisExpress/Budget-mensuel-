@@ -39,14 +39,36 @@ ready(function(){
     items.sort(function(a,b){return a.d-b.d;});return {thisMonth:sumThis,nextMonth:sumNext,items:items.slice(0,4)};
   }
   function injectDashboard(){
-    var host=document.getElementById('page-dashboard');if(!host)return;var old=host.querySelector('[data-v23-anticip]');if(old)old.remove();var f=plannerForecast(),sec=document.createElement('section');sec.className='card v23-anticip';sec.setAttribute('data-v23-anticip','1');
+    var host=document.getElementById('page-dashboard');
+    if(!host)return;
+    var f=plannerForecast();
+    var sig=JSON.stringify({t:f.thisMonth,n:f.nextMonth,i:f.items});
+    var sec=host.querySelector('[data-v23-anticip]');
+    /* Important : ne pas recréer la carte si son contenu n'a pas changé.
+       L'ancienne version supprimait/réinsérait la carte à chaque mutation DOM,
+       ce qui relançait le MutationObserver en boucle et pouvait figer l'app. */
+    if(sec && sec.getAttribute('data-v23-sig')===sig)return;
+    if(!sec){
+      sec=document.createElement('section');
+      sec.className='card v23-anticip';
+      sec.setAttribute('data-v23-anticip','1');
+      var hero=host.querySelector('.hero');
+      if(hero&&hero.nextSibling)host.insertBefore(sec,hero.nextSibling);else host.appendChild(sec);
+    }
+    sec.setAttribute('data-v23-sig',sig);
     sec.innerHTML='<div class="v23-headrow"><div><div class="v23-title">Prévisions &amp; Anticipations</div><div class="v23-note">Ce qui arrive avant que l’argent ne parte.</div></div><span class="v23-badge">Budget+</span></div>'
       +'<div class="v23-forecast-grid"><div class="v23-forecast"><small>À anticiper ce mois</small><b>'+eur(f.thisMonth)+'</b></div><div class="v23-forecast"><small>Mois prochain</small><b>'+eur(f.nextMonth)+'</b></div></div>'
       +(f.items.length?'<div class="v23-mini-list">'+f.items.map(function(x){return '<div class="v23-mini"><span class="v23-mini-ic">'+x.ic+'</span><span class="v23-mini-main"><b>'+esc(x.name)+'</b><span>'+esc(x.meta)+'</span></span><span class="v23-mini-amt">'+eur(x.amount)+'</span></div>';}).join('')+'</div>':'<p class="v23-empty">Ajoute un anniversaire, une dépense annuelle ou un échéancier dans « Plus ».</p>')
       +'<div class="v23-actions"><button class="primary" data-openmod="birthdays">Gérer les anticipations</button></div>';
-    var hero=host.querySelector('.hero');if(hero&&hero.nextSibling)host.insertBefore(sec,hero.nextSibling);else host.appendChild(sec);
   }
-  var obs=new MutationObserver(function(){if(document.getElementById('page-dashboard'))injectDashboard();});obs.observe(document.querySelector('.pages')||document.body,{childList:true,subtree:true});setTimeout(injectDashboard,80);
+  var injectQueued=false;
+  var obs=new MutationObserver(function(){
+    if(injectQueued)return;
+    injectQueued=true;
+    setTimeout(function(){injectQueued=false;injectDashboard();},0);
+  });
+  obs.observe(document.querySelector('.pages')||document.body,{childList:true,subtree:true});
+  setTimeout(injectDashboard,80);
 
   ORION.register({id:'birthdays',order:20,title:'Anniversaires',subtitle:'Anticiper cadeaux & événements',icon:'🎂',render:function(){var s=state(),total=s.birthdays.reduce(function(a,x){return a+num(x.budget);},0);return '<section class="card"><div class="v23-kpis"><div class="v23-kpi"><small>Budget annuel prévu</small><b>'+eur(total)+'</b></div><div class="v23-kpi"><small>Événements enregistrés</small><b>'+s.birthdays.length+'</b></div></div><div class="v23-form"><label>Personne / événement<input id="v23-b-name" placeholder="Ex : Emma"></label><div class="v23-form-grid"><label>Date<input id="v23-b-date" type="date"></label><label>Budget cadeau (€)<input id="v23-b-budget" type="number" step="0.01" inputmode="decimal"></label></div><button class="primary" data-v22="v23-b-add">Ajouter l’anniversaire</button></div></section><section class="card">'+(s.birthdays.length?s.birthdays.slice().sort(function(a,b){return daysUntil(a.date)-daysUntil(b.date);}).map(function(x){var d=daysUntil(x.date);return '<div class="v23-row"><div class="v23-row-main"><b>🎂 '+esc(x.name)+'</b><span>'+dateFR(x.date)+' · dans '+d+' jour'+(d>1?'s':'')+'</span><span class="v23-status '+(d<=30?'warn':'')+'">'+(d<=30?'À anticiper maintenant':'Prévu')+'</span></div><div class="v23-row-amt"><b>'+eur(x.budget)+'</b><div class="v23-actions"><button class="danger" data-v22="v23-del" data-kind="birthdays" data-id="'+x.id+'">Suppr.</button></div></div></div>';}).join(''):'<p class="v23-empty">Aucun anniversaire enregistré.</p>')+'</section>';},actions:{'v23-b-add':function(){var n=val('v23-b-name').trim(),d=val('v23-b-date');if(!n||!d){toast('Nom et date obligatoires');return;}var s=state();s.birthdays.push({id:id('b'),name:n,date:d,budget:num(val('v23-b-budget'))});save(s);rer('birthdays');toast('Anniversaire ajouté');},'v23-del':delAction}});
 
