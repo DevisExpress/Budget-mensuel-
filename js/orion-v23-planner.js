@@ -61,14 +61,18 @@ ready(function(){
       +(f.items.length?'<div class="v23-mini-list">'+f.items.map(function(x){return '<div class="v23-mini"><span class="v23-mini-ic">'+x.ic+'</span><span class="v23-mini-main"><b>'+esc(x.name)+'</b><span>'+esc(x.meta)+'</span></span><span class="v23-mini-amt">'+eur(x.amount)+'</span></div>';}).join('')+'</div>':'<p class="v23-empty">Ajoute un anniversaire, une dépense annuelle ou un échéancier dans « Plus ».</p>')
       +'<div class="v23-actions"><button class="primary" data-openmod="birthdays">Gérer les anticipations</button></div>';
   }
-  var injectQueued=false;
-  var obs=new MutationObserver(function(){
-    if(injectQueued)return;
-    injectQueued=true;
-    setTimeout(function(){injectQueued=false;injectDashboard();},0);
-  });
-  obs.observe(document.querySelector('.pages')||document.body,{childList:true,subtree:true});
-  setTimeout(injectDashboard,80);
+  /* Injection volontairement SANS MutationObserver.
+     Le dashboard de l'app est très dynamique : observer tout le DOM peut provoquer
+     une boucle de rendu et figer Safari/Chrome mobile. On réinjecte seulement après
+     les interactions utilisateur et les changements de période. */
+  var injectTimer=null;
+  function queueInject(){
+    clearTimeout(injectTimer);
+    injectTimer=setTimeout(injectDashboard,40);
+  }
+  setTimeout(injectDashboard,120);
+  document.addEventListener('click',queueInject,true);
+  document.addEventListener('change',queueInject,true);
 
   ORION.register({id:'birthdays',order:20,title:'Anniversaires',subtitle:'Anticiper cadeaux & événements',icon:'🎂',render:function(){var s=state(),total=s.birthdays.reduce(function(a,x){return a+num(x.budget);},0);return '<section class="card"><div class="v23-kpis"><div class="v23-kpi"><small>Budget annuel prévu</small><b>'+eur(total)+'</b></div><div class="v23-kpi"><small>Événements enregistrés</small><b>'+s.birthdays.length+'</b></div></div><div class="v23-form"><label>Personne / événement<input id="v23-b-name" placeholder="Ex : Emma"></label><div class="v23-form-grid"><label>Date<input id="v23-b-date" type="date"></label><label>Budget cadeau (€)<input id="v23-b-budget" type="number" step="0.01" inputmode="decimal"></label></div><button class="primary" data-v22="v23-b-add">Ajouter l’anniversaire</button></div></section><section class="card">'+(s.birthdays.length?s.birthdays.slice().sort(function(a,b){return daysUntil(a.date)-daysUntil(b.date);}).map(function(x){var d=daysUntil(x.date);return '<div class="v23-row"><div class="v23-row-main"><b>🎂 '+esc(x.name)+'</b><span>'+dateFR(x.date)+' · dans '+d+' jour'+(d>1?'s':'')+'</span><span class="v23-status '+(d<=30?'warn':'')+'">'+(d<=30?'À anticiper maintenant':'Prévu')+'</span></div><div class="v23-row-amt"><b>'+eur(x.budget)+'</b><div class="v23-actions"><button class="danger" data-v22="v23-del" data-kind="birthdays" data-id="'+x.id+'">Suppr.</button></div></div></div>';}).join(''):'<p class="v23-empty">Aucun anniversaire enregistré.</p>')+'</section>';},actions:{'v23-b-add':function(){var n=val('v23-b-name').trim(),d=val('v23-b-date');if(!n||!d){toast('Nom et date obligatoires');return;}var s=state();s.birthdays.push({id:id('b'),name:n,date:d,budget:num(val('v23-b-budget'))});save(s);rer('birthdays');toast('Anniversaire ajouté');},'v23-del':delAction}});
 
