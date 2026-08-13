@@ -237,6 +237,14 @@ h1,h2,h3{letter-spacing:-.4px}
 
 @media (max-width:360px){ .kpi strong{font-size:13px} .hero-amount{font-size:30px} }
 
+
+/* Budget Mensuel+ V3 — fidélité maquette */
+.bottom-nav{grid-template-columns:repeat(6,1fr)!important;padding-left:5px!important;padding-right:5px!important}
+.bottom-nav button{font-size:8px!important}.bottom-nav button svg{width:20px!important;height:20px!important}
+.anticip{background:transparent;padding:0}.anticip .section-head{margin:2px 2px 10px}.anticip-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.anticip-card{position:relative;text-align:left;border-radius:15px;padding:13px 12px;border:1px solid var(--line);min-height:100px;box-shadow:var(--shadow-sm)}.anticip-card b{display:block;font-size:12px;line-height:1.25}.anticip-card small{display:block;color:var(--mut);font-size:10.5px;margin:6px 0}.anticip-card strong{font-size:15px}.anticip-card i{position:absolute;right:10px;bottom:12px;font-style:normal;font-size:20px}.anticip-card.pink{background:#fff1f4;color:#ef3f66;border-color:#ffdbe4}.anticip-card.blue{background:#eef6ff;color:#1670df;border-color:#d8eaff}.anticip-card.orange{background:#fff6e9;color:#e87800;border-color:#ffe5bd}.anticip-card.mint{background:#eefaf3;color:#07874b;border-color:#d5f0e1}
+.calendar-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}.calendar-head button{font-size:24px}.week,.calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;text-align:center}.week b{font-size:10px;color:var(--mut)}.cal-day{height:34px;display:flex;align-items:center;justify-content:center;border-radius:50%;font-size:12px}.cal-day.has{background:var(--green);color:#fff;font-weight:800}.cal-legend{font-size:10px;color:var(--mut);margin-top:15px;text-align:center}.primary{background:var(--green);color:#fff;border-radius:13px;padding:13px 16px;font-weight:800;box-shadow:var(--shadow-green)}.mini-del{font-size:20px;color:var(--dim);padding:5px}
+#page-goals .page-h h1:after{content:' Épargne';font-size:0} 
+
 </style>
   <style>
 /* ═══════════════════════════════════════════════════════════════════════
@@ -314,7 +322,6 @@ h1,h2,h3{letter-spacing:-.4px}
 .pn-select{flex:1;min-width:0;padding:10px 8px;font-size:14px;font-weight:800;background:var(--gray-l);border-color:transparent;text-align:center;text-align-last:center;color:var(--navy)}
 
 </style>
-  <link rel="stylesheet" href="css/orion-v23.css?v=23" />
 </head>
 <body>
   <div class="app-shell">
@@ -322,7 +329,7 @@ h1,h2,h3{letter-spacing:-.4px}
       <div class="brand-row">
         <span class="brand-mark"><svg viewBox="0 0 24 24"><path d="M12 2l2.4 7.6L22 12l-7.6 2.4L12 22l-2.4-7.6L2 12l7.6-2.4z"/></svg></span>
         <div>
-          <div class="brand">ORION</div>
+          <div class="brand">Budget Mensuel+</div>
           <p class="subtitle" id="monthLabel">Budget</p>
         </div>
       </div>
@@ -339,18 +346,24 @@ h1,h2,h3{letter-spacing:-.4px}
     <main class="pages">
       <section class="page active" id="page-dashboard"></section>
       <section class="page" id="page-transactions"></section>
+      <section class="page" id="page-planning"></section>
       <section class="page" id="page-stats"></section>
       <section class="page" id="page-goals"></section>
       <section class="page" id="page-settings"></section>
       <section class="page" id="page-plus"></section>
+      <section class="page" id="page-birthdays"></section>
+      <section class="page" id="page-annual"></section>
+      <section class="page" id="page-installments"></section>
+      <section class="page" id="page-exchanges"></section>
     </main>
 
     <nav class="bottom-nav" aria-label="Navigation principale">
-      <button class="active" data-page="dashboard" aria-label="Accueil"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"/></svg><small>Accueil</small></button>
-      <button data-page="transactions" aria-label="Lignes"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><small>Lignes</small></button>
-      <button data-page="stats" aria-label="Statistiques"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><small>Stats</small></button>
-      <button data-page="goals" aria-label="Objectifs"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.4"/></svg><small>Objectifs</small></button>
-      <button data-page="settings" aria-label="Réglages"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13.5a7.7 7.7 0 0 0 0-3l1.8-1.4-1.9-3.2-2.1.9a7.5 7.5 0 0 0-2.6-1.5L14 3h-4l-.5 2.3a7.5 7.5 0 0 0-2.6 1.5l-2.1-.9L2.8 9.1l1.8 1.4a7.7 7.7 0 0 0 0 3L2.8 15l1.9 3.2 2.1-.9a7.5 7.5 0 0 0 2.6 1.5L10 21h4l.5-2.3a7.5 7.5 0 0 0 2.6-1.5l2.1.9 1.9-3.2z"/></svg><small>Réglages</small></button>
+      <button class="active" data-page="dashboard"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V21h-6v-6H9v6H3z"/></svg><small>Accueil</small></button>
+      <button data-page="transactions"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><small>Transactions</small></button>
+      <button data-page="planning"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M8 3v4M16 3v4M3 10h18"/></svg><small>Planification</small></button>
+      <button data-page="stats"><svg viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><small>Analyses</small></button>
+      <button data-page="goals"><svg viewBox="0 0 24 24"><path d="M5 11c0-4 3-7 7-7s7 3 7 7-3 8-7 9c-4-1-7-5-7-9z"/><path d="M12 8v7M9 11h6"/></svg><small>Épargne</small></button>
+      <button data-page="settings"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg><small>Plus</small></button>
     </nav>
   </div>
 
@@ -805,6 +818,7 @@ function renderDashboard(){
       +'<div class="hero-delta">'+deltaArrow+(delta>=0?'+':'')+eur(delta)+' vs '+ML[(month+11)%12].toLowerCase()+'</div>'
       +'<div class="spark">'+sparkFrom(yearFinals(),'rgba(255,255,255,.95)')+'</div>'
       +'<div class="hero-fore"><span>Prévision fin de mois</span><b>'+eur(t.final)+'</b></div></section>'
+    +anticipationCards()
     +'<div class="kpi-grid">'
       +'<article class="kpi green"><div class="ico">'+icon('up')+'</div><h3>Revenus</h3><strong>'+short(t.tin)+'</strong><p>ce mois</p></article>'
       +'<article class="kpi red"><div class="ico">'+icon('down')+'</div><h3>Dépenses</h3><strong>'+short(t.tex)+'</strong><p>ce mois</p></article>'
@@ -890,7 +904,7 @@ function renderGoals(){
 function renderSettings(){
   let src='bgt4';try{if(!localStorage.getItem('bgt4')){if(localStorage.getItem('budgetV3'))src='budgetV3';else if(localStorage.getItem('budgetV2'))src='budgetV2';else src='nouveau';}}catch(e){}
   $('page-settings').innerHTML=
-    '<div class="page-h"><h1>Réglages</h1></div>'
+    '<div class="page-h"><h1>Plus</h1></div>'
     +'<section class="card settings-area"><h2 style="font-size:14px;font-weight:800;color:var(--navy);margin-bottom:12px">Données</h2>'
       +'<textarea id="jsonArea" placeholder="Le JSON exporté s’affiche ici. Colle un JSON puis Importer."></textarea>'
       +'<div class="set-row"><button class="secondary" id="exportBtn">Exporter JSON</button><button class="primary" id="importBtn">Importer JSON</button></div></section>'
@@ -903,10 +917,41 @@ function renderSettings(){
     +'<section class="card danger-zone"><h2 style="font-size:14px;font-weight:800;color:var(--navy);margin-bottom:12px">Maintenance</h2><button class="danger" id="reloadBtn">Recharger depuis le stockage</button></section>';
 }
 
+
+/* ── BUDGET MENSUEL+ V3 : planification et anticipation ─────────────── */
+function plusData(){try{return JSON.parse(localStorage.getItem('budget_plus_v3')||'{}')}catch(e){return {}}}
+function savePlusData(d){try{localStorage.setItem('budget_plus_v3',JSON.stringify(d))}catch(e){}}
+function arr(k){let d=plusData();return Array.isArray(d[k])?d[k]:[]}
+function sumArr(a,key){return a.reduce((s,x)=>s+num(x[key||'amount']),0)}
+function anticipationCards(){
+ let bd=arr('birthdays'),an=arr('annual'),ins=arr('installments').filter(x=>!x.done),ex=arr('exchanges').filter(x=>!x.done);
+ let bdSum=sumArr(bd,'budget'), anSum=sumArr(an,'amount'), insSum=ins.reduce((s,x)=>s+num(x.monthly),0), exSum=sumArr(ex,'amount');
+ return '<section class="anticip"><div class="section-head"><h2>Prévisions & Anticipations</h2><button class="link" data-page-go="planning">Voir tout ›</button></div><div class="anticip-grid">'
+ +'<button class="anticip-card pink" data-page-go="birthdays"><b>🎂 Anniversaires</b><small>'+bd.length+' à venir</small><strong>'+eur(bdSum)+'</strong><i>›</i></button>'
+ +'<button class="anticip-card blue" data-page-go="annual"><b>🗓️ Dépenses annuelles</b><small>'+an.length+' à venir</small><strong>'+eur(anSum)+'</strong><i>›</i></button>'
+ +'<button class="anticip-card orange" data-page-go="installments"><b>💳 Paiements en plusieurs fois</b><small>'+ins.length+' en cours</small><strong>'+eur(insSum)+'</strong><i>›</i></button>'
+ +'<button class="anticip-card mint" data-page-go="exchanges"><b>🤝 Échanges / Remboursements</b><small>'+ex.length+' en attente</small><strong>'+eur(exSum)+'</strong><i>›</i></button>'
+ +'</div></section>';
+}
+function renderPlanning(){
+ let mi=m(), items=mi.expenses.filter(x=>!x.paid&&x.dueDate).slice().sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
+ let days=new Date(year,month+1,0).getDate(), first=(new Date(year,month,1).getDay()+6)%7, cells='';
+ for(let i=0;i<first;i++)cells+='<span></span>';
+ for(let d=1;d<=days;d++){let has=items.some(x=>Number(x.dueDate.slice(-2))===d);cells+='<span class="cal-day'+(has?' has':'')+'">'+d+'</span>'}
+ $('page-planning').innerHTML='<div class="page-h"><h1>Planification</h1></div><section class="card"><div class="calendar-head"><button data-period="prev">‹</button><b>'+ML[month]+' '+year+'</b><button data-period="next">›</button></div><div class="week"><b>Lun</b><b>Mar</b><b>Mer</b><b>Jeu</b><b>Ven</b><b>Sam</b><b>Dim</b></div><div class="calendar-grid">'+cells+'</div><div class="cal-legend">🟢 Revenus &nbsp; 🔴 Dépenses fixes &nbsp; 🟠 Échéances</div></section>'+anticipationCards()+'<section class="card"><div class="section-head"><h2>Prochains événements</h2></div>'+(items.length?items.slice(0,6).map(x=>'<div class="row"><div class="row-main"><div class="row-title">'+esc(x.name)+'</div><div class="row-meta">'+dateFR(x.dueDate)+'</div></div><b class="amount neg">-'+eur(x.amount)+'</b></div>').join(''):'<p class="empty">Aucune échéance prévue.</p>')+'</section>';
+}
+function renderExtraPages(){
+ function listPage(id,title,color,key,fields){let a=arr(key);$(id).innerHTML='<div class="page-h"><h1 style="color:'+color+'">'+title+'</h1><p>Anticipez vos dépenses sans surprise.</p></div><button class="primary v3add" data-add-kind="'+key+'">+ Ajouter</button><section class="card">'+(a.length?a.map((x,i)=>'<div class="row"><div class="row-main"><div class="row-title">'+esc(x.name||'Sans nom')+'</div><div class="row-meta">'+esc(x.date||x.note||'')+'</div></div><b class="amount">'+eur(x.amount||x.budget||x.monthly||0)+'</b><button class="mini-del" data-del-kind="'+key+'" data-del-i="'+i+'">×</button></div>').join(''):'<p class="empty">Aucun élément pour le moment.</p>')+'</section>';}
+ listPage('page-birthdays','Anniversaires','#ff3f6c','birthdays');
+ listPage('page-annual','Dépenses annuelles','#1479ff','annual');
+ listPage('page-installments','Paiements en plusieurs fois','#f07a00','installments');
+ listPage('page-exchanges','Échanges / Remboursements','#0a9a58','exchanges');
+}
+
 /* ── Rendu global / navigation ───────────────────────────────────────── */
 function render(){
   $('monthLabel').textContent=ML[month]+' '+year;
-  renderDashboard();renderTransactions();renderStats();renderGoals();renderSettings();
+  renderDashboard();renderTransactions();renderPlanning();renderStats();renderGoals();renderSettings();renderExtraPages();
   document.querySelectorAll('.bottom-nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===currentPage));
 }
 function switchPage(p){
@@ -1037,6 +1082,8 @@ function doImport(){
 
 /* ── Événements ──────────────────────────────────────────────────────── */
 document.addEventListener('click',e=>{
+  let addv=e.target.closest('[data-add-kind]'); if(addv){let k=addv.dataset.addKind,d=plusData(),a=Array.isArray(d[k])?d[k]:[];let name=prompt('Nom');if(!name)return;let amount=prompt(k==='birthdays'?'Budget prévu (€)':k==='installments'?'Mensualité (€)':'Montant (€)','0');let date=prompt('Date ou note (ex : 15/09/2026)','');a.push(k==='birthdays'?{name:name,budget:num(amount),date:date}:{name:name,amount:num(amount),monthly:k==='installments'?num(amount):0,date:date});d[k]=a;savePlusData(d);render();return;}
+  let delv=e.target.closest('[data-del-kind]'); if(delv){let k=delv.dataset.delKind,d=plusData(),a=Array.isArray(d[k])?d[k]:[];a.splice(Number(delv.dataset.delI),1);d[k]=a;savePlusData(d);render();return;}
   let nav=e.target.closest('.bottom-nav button');if(nav)return switchPage(nav.dataset.page);
   let go=e.target.closest('[data-page-go]');if(go)return switchPage(go.dataset.pageGo);
   let f=e.target.closest('[data-filter]');if(f){filter=f.dataset.filter;renderTransactions();return;}
@@ -1533,6 +1580,5 @@ ready(function(){
 })();
 
 </script>
-  <script src="js/orion-v23-planner.js?v=23"></script>
 </body>
 </html>
