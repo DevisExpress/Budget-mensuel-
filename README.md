@@ -1,4 +1,17 @@
-# Budget-mensuel-
+# Budget Orion (Budget-mensuel-)
+
+Application de gestion budgétaire personnelle : dépenses récurrentes, planification, analyse, épargne par poches, objectifs et stratégie d'investissement. 100% locale (`localStorage`), aucun serveur, déployée sur GitHub Pages.
+
+**URL en ligne :** https://devisexpress.github.io/Budget-mensuel-/
+
+## Structure du dépôt
+- `index.html` — point d'entrée, charge `css/app.css` puis `js/brands.js` et `js/app.js` en chemins relatifs (compatibles GitHub Pages en sous-dossier de projet).
+- `css/app.css` — feuille de style unique (thème clair, vert doux, sans mode sombre).
+- `js/brands.js` — registre extensible de reconnaissance de marques (nom → icône → catégorie suggérée).
+- `js/app.js` — application (rendu, moteur de récurrence, stratégie, poches d'épargne, sauvegardes...).
+- `404.html` — page de redirection pour les anciennes URLs (`/orion_v2/`, `/orion_v21/`) vers la racine.
+
+Voir `V6-CHANGELOG.md` pour le détail de la dernière refonte (migration de données, nouvelles fonctionnalités, tests effectués).
 
 ## V4.1 — statuts restaurés
 - Le bouton de coche des revenus/dépenses est de nouveau directement accessible dans les listes.

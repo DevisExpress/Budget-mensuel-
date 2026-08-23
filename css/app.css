@@ -26,3 +26,48 @@ body{background:linear-gradient(180deg,#f9fcfa 0,#f4f9f6 100%);color:var(--ink)}
 .card,.metric{box-shadow:var(--shadow)}.hero{background:linear-gradient(145deg,#39c98a,#20ad6f);box-shadow:0 12px 30px rgba(33,181,115,.20)}.ring:after{background:#2bbb7b}.nav button.active{color:var(--g)}
 .brandmark{width:38px;height:38px;flex:0 0 38px;border-radius:12px;display:grid;place-items:center;font-weight:950;font-size:17px;letter-spacing:-1px;background:#eff8f3;color:var(--gd);border:1px solid #e1eee7}.brand-netflix{background:#080808;color:#e50914;font-size:22px;font-family:Arial Black,sans-serif}.brand-chatgpt{background:#fff;color:#111;border-color:#dfe5e2;font-size:19px}.brand-spotify{background:#191414;color:#1ed760}.brand-amazon{background:#fff7e9;color:#111}.brand-bank{background:#edf5ff;color:#2773c8}.brand-generic{background:#eefaf4;color:#15915b}
 .clickable-card{cursor:pointer;transition:transform .15s ease,border-color .15s ease}.clickable-card:active{transform:scale(.985);border-color:#b8dfca}.smart-strip{display:flex;gap:8px;overflow:auto;padding:1px 0 4px;scrollbar-width:none}.smart-chip{min-width:145px;padding:11px;border:1px solid var(--line);border-radius:14px;background:#fff;box-shadow:var(--shadow)}.smart-chip small{display:block;color:var(--mut);font-size:10px}.smart-chip b{font-size:12px;display:block;margin-top:3px}.strategy-hero{background:linear-gradient(145deg,#effbf5,#f9fdfb);border:1px solid #cfeadd}.strategy-number{font-size:30px;font-weight:950;color:var(--gd);letter-spacing:-1px}.strategy-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}.strategy-kpi{background:#fff;border:1px solid var(--line);border-radius:15px;padding:12px}.strategy-kpi small{display:block;color:var(--mut);font-size:10px}.strategy-kpi b{display:block;margin-top:4px;font-size:15px}.strategy-track{height:10px;border-radius:99px;background:#e7f0eb;overflow:hidden}.strategy-track span{height:100%;display:block;border-radius:99px;background:linear-gradient(90deg,#6dd5a1,#20ad6f)}.scenario-row{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}.scenario-row:last-child{border:0}.day.clickable{cursor:pointer;border-radius:10px}.day.clickable:active{background:#eff9f3}.freq-badge{display:inline-block;padding:3px 7px;border-radius:999px;background:#eef8f2;color:var(--gd);font-size:9px;font-weight:800;margin-top:3px}.mini-action{border:1px solid #d8e9df;background:#fff;color:var(--gd);border-radius:10px;padding:7px 9px;font-size:10px;font-weight:850}.goal-actions{display:flex;gap:6px;margin-top:8px}.premium-note{background:linear-gradient(135deg,#f8fcfa,#eef9f3);border:1px solid #d6ebdf;border-radius:16px;padding:13px}.plus-strategy{background:linear-gradient(135deg,#effbf5,#fffaf0);border-color:#d8eadf}.gold{color:#a77924}.subtle{color:var(--mut);font-size:11px}
+
+/* V6 — refonte fonctionnelle : intelligence locale, poches, planification étendue */
+@keyframes v6fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+#view.fade-in{animation:v6fade .22s ease}
+.clickable{cursor:pointer}
+
+/* Marques additionnelles (objectif 7) */
+.brand-disney{background:#0c1c5c;color:#fff;font-size:13px;font-weight:900}
+.brand-youtube{background:#fff1f1;color:#ff0000;font-size:19px}
+.brand-apple{background:#111;color:#fff;font-size:18px}
+.brand-orange{background:#fff2ec;color:#ff7900;font-weight:900}
+.brand-free{background:#eef7ff;color:#c8102e;font-weight:900}
+.brand-sfr{background:#fff2f5;color:#e2001a;font-size:12px;font-weight:900}
+.brand-bouygues{background:#eef6ff;color:#0057a3;font-weight:900}
+.brand-uber{background:#111;color:#fff;font-size:16px}
+.brand-hint{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--mut);background:#f6faf7;border:1px solid var(--line);border-radius:11px;padding:8px 10px;margin-top:-2px}
+.brand-hint .brandmark{width:26px;height:26px;flex:0 0 26px;font-size:13px}
+
+/* Argent déjà engagé (accueil) */
+.engaged-card .engaged-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.engaged-card .engaged-row:last-child{border-bottom:0}
+.engaged-card .engaged-row.total{font-weight:850;font-size:14px;padding-top:10px}
+
+/* Intelligence locale */
+.insights-card{background:#fbfdfa}
+.insight-row{display:flex;gap:9px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line);font-size:12px;line-height:1.4}
+.insight-row:last-child{border-bottom:0}
+.insight-row .insight-ic{flex:0 0 auto}
+.insight-row.lvl-warn{color:#9a4b12}
+.insight-row.lvl-good{color:var(--gd)}
+.insight-row.lvl-info{color:var(--ink)}
+
+/* Raccourcis rapides accueil */
+.quick-row{display:flex;gap:8px}
+.quick-chip{flex:1;background:#fff;border:1px solid var(--line);border-radius:13px;padding:11px 6px;font-size:11.5px;font-weight:800;color:var(--gd);box-shadow:var(--shadow);text-align:center}
+.quick-chip:active{transform:scale(.97)}
+
+/* Onglets de plage (planification) et de scénario (stratégie) */
+.range-tabs button,.scenario-tabs button{white-space:nowrap}
+.scenario-tabs{overflow-x:auto}
+
+/* Poches / objectifs : léger ajustement */
+.goal-actions button{font-size:10px}
+
+@media(max-width:380px){.quick-row{flex-wrap:wrap}.quick-chip{min-width:31%}}
