@@ -88,6 +88,9 @@
     e.birthdays = Array.isArray(e.birthdays) ? e.birthdays : [];
     e.exchanges = Array.isArray(e.exchanges) ? e.exchanges : [];
     e.strategy = e.strategy || { capital: 0, monthly: 300, rate: 7 };
+    // Migration additive (non destructive) : horizon de projection et taux des 3 scénarios.
+    e.strategy.horizon = num(e.strategy.horizon) || 20;
+    e.strategy.scenarioRates = e.strategy.scenarioRates || { prudent: 5, central: num(e.strategy.rate) || 7, dynamique: 10 };
     if (!Array.isArray(e.pockets) || !e.pockets.length) {
       e.pockets = [
         { id: uid('pk'), name: 'Sécurité', emoji: '🛡️', balance: num(e.strategy?.emergencyFund) || 0, monthlyTarget: 0, security: true },
@@ -150,9 +153,14 @@
   let year = Number.isInteger(budget.currentYear) ? budget.currentYear : new Date().getFullYear();
   let month = Number.isInteger(budget.currentMonth) ? budget.currentMonth : new Date().getMonth();
   let page = 'home';
+  let lastRenderedPage = null; // used by render() to reset scroll only on real page changes
   let txFilter = 'all';
   let planningRange = 30;
   let stratPreviewRate = null; // overrides extra.strategy.rate for live "et si" preview only
+  let stratMetric = 'capital'; // 'capital' | 'interets' | 'versements' — métrique affichée sur "Évolution de ton capital"
+  let stratProjScenario = 'central'; // scénario affiché sur "Projection détaillée"
+  let stratWhatIfDelta = 100; // dernier delta saisi dans la simulation "Et si ?" de Ma stratégie
+  const chartData = {}; // stocke les points de données par id de graphique pour les info-bulles au survol
   const key = () => `${year}-${p2(month + 1)}`;
 
   function saveBudget() { budget.currentYear = year; budget.currentMonth = month; budget.schema = SCHEMA_VERSION; try { localStorage.setItem(KEY_BUDGET, JSON.stringify(budget)); } catch {} }
@@ -336,24 +344,6 @@
   /* ---------------------------------------------------------------------
      4. STRATÉGIE (investissement, point de bascule, point d'accélération)
      ------------------------------------------------------------------- */
-  function simulateStrategy(capital, monthly, ratePct, maxMonths = 1200) {
-    const rate = Math.max(0, num(ratePct)) / 100;
-    const annual = monthly * 12;
-    let c = capital, months = 0, basculeMonth = null, accelMonth = null;
-    const mr = Math.pow(1 + rate, 1 / 12) - 1;
-    const yearly = [];
-    while (months <= maxMonths) {
-      const gain = c * rate;
-      if (basculeMonth == null && annual > 0 && gain >= annual) basculeMonth = months;
-      if (accelMonth == null && annual > 0 && gain >= annual * 2) accelMonth = months;
-      if (months % 12 === 0) yearly.push({ year: months / 12, capital: c });
-      if (basculeMonth != null && accelMonth != null && months / 12 >= 30) break;
-      c = c * (1 + mr) + monthly;
-      months++;
-    }
-    return { annual, rate, basculeMonth, accelMonth, yearly, finalCapital: c };
-  }
-
   function projectCapital(years, capital, monthly, ratePct) {
     const mr = Math.pow(1 + num(ratePct) / 100, 1 / 12) - 1;
     let c = capital;
@@ -373,22 +363,136 @@
     const capital = Math.max(0, num(s.capital));
     const monthly = Math.max(0, num(s.monthly));
     const rate = rateOverride != null ? rateOverride : Math.max(0, num(s.rate));
-    const sim = simulateStrategy(capital, monthly, rate);
+    const horizon = Math.max(5, num(s.horizon) || 20);
+    const engine = financeEngine(capital, monthly, rate, horizon);
     const gain = capital * (rate / 100);
-    const progress = sim.annual > 0 ? Math.min(999, (gain / sim.annual) * 100) : 0;
-    const target = rate > 0 ? sim.annual / (rate / 100) : 0;
+    const progress = engine.annual > 0 ? Math.min(999, (gain / engine.annual) * 100) : 0;
+    const target = rate > 0 ? engine.annual / (rate / 100) : 0;
+    const target2 = rate > 0 ? (engine.annual * 2) / (rate / 100) : 0;
     const annualExp = annualExpensesEstimate();
     const libertyPct = annualExp > 0 ? Math.round((gain / annualExp) * 100) : 0;
     return {
-      capital, monthly, rate, annual: sim.annual, target, gain, progress,
-      basculeMonths: sim.basculeMonth, accelMonths: sim.accelMonth,
+      capital, monthly, rate, horizon, annual: engine.annual, target, target2, gain, progress,
+      basculeMonths: engine.basculeMonth, accelMonths: engine.accelMonth,
       dailyGain: gain / 365, monthlyGain: gain / 12,
-      libertyPct, annualExpenses: annualExp
+      libertyPct, annualExpenses: annualExp, engine
     };
   }
 
   function monthsToText(m) { if (m == null) return 'Horizon non calculable'; const y = Math.floor(m / 12), mm = m % 12; if (y <= 0) return `${mm} mois`; if (mm === 0) return `${y} an${y > 1 ? 's' : ''}`; return `${y} an${y > 1 ? 's' : ''} et ${mm} mois`; }
   function monthsToDate(m) { if (m == null) return '—'; const d = new Date(); d.setMonth(d.getMonth() + m); return d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }); }
+
+  /* ---------------------------------------------------------------------
+     4bis. MOTEUR FINANCIER UNIFIÉ (Ma stratégie)
+     ------------------------------------------------------------------- -
+     Convention de calcul (identique partout dans l'écran Ma stratégie) :
+     - le taux mensuel est dérivé du taux annuel par composition :
+         mr = (1 + tauxAnnuel)^(1/12) - 1
+     - à chaque mois : le capital du mois précédent produit son rendement,
+       PUIS le versement mensuel est ajouté en fin de mois (il ne produit
+       donc des intérêts qu'à partir du mois suivant) :
+         capital(m) = capital(m-1) * (1 + mr) + versementMensuel
+     - "versements cumulés" = somme des versements déjà effectués (hors
+       capital initial) ; "intérêts cumulés" = capital(m) - capital(0) -
+       versements cumulés(m).
+     Ce même moteur alimente : les jauges, le graphique d'évolution, les
+     scénarios, la simulation « Et si ? » et le tableau des repères — pour
+     ne jamais obtenir de résultats contradictoires entre les cartes.
+     ------------------------------------------------------------------- */
+  function financeEngine(capital0, monthly, ratePct, horizonYears) {
+    capital0 = Math.max(0, num(capital0));
+    monthly = Math.max(0, num(monthly));
+    const rate = Math.max(0, num(ratePct)) / 100;
+    const mr = Math.pow(1 + rate, 1 / 12) - 1;
+    const annual = monthly * 12;
+    const horizonMonths = Math.max(12, Math.round(num(horizonYears) || 20) * 12);
+    const searchCap = Math.max(horizonMonths, 1200); // recherche du point de bascule/accélération au-delà de l'horizon affiché si besoin (jusqu'à 100 ans)
+    let c = capital0, versements = 0;
+    let basculeMonth = null, accelMonth = null;
+    const points = [{ month: 0, year: 0, capital: c, versements: 0, interets: 0 }];
+    for (let m = 1; m <= searchCap; m++) {
+      c = c * (1 + mr) + monthly;
+      versements += monthly;
+      const interets = c - capital0 - versements;
+      const gain = c * rate;
+      if (basculeMonth == null && annual > 0 && gain >= annual) basculeMonth = m;
+      if (accelMonth == null && annual > 0 && gain >= annual * 2) accelMonth = m;
+      if (m <= horizonMonths) points.push({ month: m, year: m / 12, capital: c, versements, interets });
+      if (m >= horizonMonths && basculeMonth != null && accelMonth != null) break;
+    }
+    const last = points[points.length - 1];
+    return {
+      capital0, monthly, ratePct: num(ratePct), rate, annual, horizonYears: horizonMonths / 12,
+      points, basculeMonth, accelMonth,
+      finalCapital: last.capital, finalVersements: last.versements, finalInterets: last.interets
+    };
+  }
+
+  function pointAtYear(engine, y) {
+    const targetMonth = Math.round(y * 12);
+    let best = engine.points[0];
+    for (const p of engine.points) { if (Math.abs(p.month - targetMonth) < Math.abs(best.month - targetMonth)) best = p; }
+    return best;
+  }
+
+  function snapshotYears(horizonYears) {
+    const h = Math.max(5, Math.round(horizonYears));
+    const step = h <= 12 ? 2 : 5;
+    const ys = [0];
+    for (let y = step; y < h; y += step) ys.push(y);
+    ys.push(h);
+    return ys;
+  }
+
+  const SCENARIOS = [
+    { key: 'prudent', label: 'Prudent', rate: 5, color: '#e8892c' },
+    { key: 'central', label: 'Central', rate: 7, color: '#20ad6f' },
+    { key: 'dynamique', label: 'Dynamique', rate: 10, color: '#2f6fe4' }
+  ];
+
+  /* ---------------------------------------------------------------------
+     4ter. GRAPHIQUES SVG (sans dépendance externe) + jauges
+     ------------------------------------------------------------------- */
+  const CHART_W = 640, CHART_H = 220, CHART_PAD_L = 54, CHART_PAD_R = 14, CHART_PAD_T = 14, CHART_PAD_B = 26;
+  function lineChartSVG(id, series, opts = {}) {
+    const W = opts.width || CHART_W, H = opts.height || CHART_H, PAD_L = CHART_PAD_L, PAD_B = CHART_PAD_B, PAD_T = CHART_PAD_T, PAD_R = CHART_PAD_R;
+    const allX = series[0]?.data.map(p => p.x) || [0, 1];
+    const allY = series.flatMap(s => s.data.map(p => p.y));
+    const maxX = Math.max(...allX, 1);
+    const maxY = Math.max(...allY, 1) * 1.08;
+    const minY = Math.min(0, ...allY);
+    const sx = x => PAD_L + (x / maxX) * (W - PAD_L - PAD_R);
+    const sy = y => (H - PAD_B) - ((y - minY) / (maxY - minY || 1)) * (H - PAD_B - PAD_T);
+    const gridY = [0, 0.25, 0.5, 0.75, 1].map(f => minY + f * (maxY - minY));
+    const grid = gridY.map(v => `<line x1="${PAD_L}" x2="${W - PAD_R}" y1="${sy(v).toFixed(1)}" y2="${sy(v).toFixed(1)}" class="chart-grid"/><text x="${PAD_L - 8}" y="${(sy(v) + 3).toFixed(1)}" class="chart-axis" text-anchor="end">${eurShort(v)}</text>`).join('');
+    const xTicksCount = Math.min(6, Math.max(2, Math.round(maxX)));
+    const xTicks = Array.from({ length: xTicksCount + 1 }, (_, i) => Math.round((i * maxX) / xTicksCount));
+    const xLabels = xTicks.map(xv => `<text x="${sx(xv).toFixed(1)}" y="${H - 6}" class="chart-axis" text-anchor="middle">${new Date().getFullYear() + xv}</text>`).join('');
+    const paths = series.map(s => {
+      const d = s.data.map((p, i) => `${i === 0 ? 'M' : 'L'}${sx(p.x).toFixed(1)} ${sy(p.y).toFixed(1)}`).join(' ');
+      return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2.75" stroke-dasharray="${s.dash || ''}" stroke-linecap="round" stroke-linejoin="round"/>`;
+    }).join('');
+    const markers = (opts.markers || []).map(mk => `<g><line x1="${sx(mk.x).toFixed(1)}" x2="${sx(mk.x).toFixed(1)}" y1="${PAD_T}" y2="${H - PAD_B}" class="chart-marker-line"/><circle cx="${sx(mk.x).toFixed(1)}" cy="${sy(mk.y).toFixed(1)}" r="4.5" fill="${mk.color || '#20ad6f'}" stroke="#fff" stroke-width="2"/></g>`).join('');
+    return `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" id="${id}" data-maxx="${maxX}" data-minx="0" preserveAspectRatio="none">
+      ${grid}${markers}${paths}
+      <g class="chart-hover" id="${id}-hover" style="display:none"><line x1="0" x2="0" y1="${PAD_T}" y2="${H - PAD_B}" class="chart-hover-line"/></g>
+      ${xLabels}
+    </svg>`;
+  }
+
+  function eurShort(v) {
+    const a = Math.abs(v);
+    if (a >= 1000) return Math.round(v / 1000) + 'k €';
+    return Math.round(v) + ' €';
+  }
+
+  function semiGauge(pct, color, big, small) {
+    const clamped = Math.max(0, Math.min(100, pct));
+    return `<div class="gauge">
+      <div class="gauge-fill" style="--pct:${clamped};--gcolor:${color}"></div>
+      <div class="gauge-center"><b>${big}</b><small>${small}</small></div>
+    </div>`;
+  }
 
   /* ---------------------------------------------------------------------
      5. "ET SI ?" — simulateur réutilisable
@@ -505,6 +609,7 @@
   function render() {
     monthObj();
     navActive();
+    $('#app').classList.toggle('strategy-wide', page === 'strategy');
     const fn = {
       home: renderHome, transactions: renderTransactions, planning: renderPlanning, analysis: renderAnalysis,
       savings: renderSavings, goals: renderGoals, strategy: renderStrategy, plus: renderPlus,
@@ -513,6 +618,13 @@
     }[page] || renderHome;
     fn();
     updateBadge();
+    // Navigating to a different screen must start at the top: without this, a scroll position
+    // inherited from a longer previous page can land mid-content under the sticky header,
+    // making the new screen's top elements unreachable/unclickable until the user scrolls.
+    if (page !== lastRenderedPage) {
+      window.scrollTo(0, 0);
+      lastRenderedPage = page;
+    }
     $('#view').classList.remove('fade-in'); void $('#view').offsetWidth; $('#view').classList.add('fade-in');
   }
 
@@ -800,68 +912,224 @@
     setTitle('Ma stratégie', false);
     const rate = stratPreviewRate != null ? stratPreviewRate : num(extra.strategy?.rate);
     const x = strategyCalc(rate);
-    const p10 = projectCapital(10, x.capital, x.monthly, x.rate), p20 = projectCapital(20, x.capital, x.monthly, x.rate), p30 = projectCapital(30, x.capital, x.monthly, x.rate);
+    const rates = extra.strategy.scenarioRates || { prudent: 5, central: 7, dynamique: 10 };
+    const scenarios = SCENARIOS.map(s => ({ ...s, rate: num(rates[s.key]) || s.rate }));
+    const engines = {}; scenarios.forEach(s => { engines[s.key] = financeEngine(x.capital, x.monthly, s.rate, x.horizon); });
+    const centralEngine = engines.central || x.engine;
 
-    $('#view').innerHTML = `<div class="stack">
-      <div class="sec-head"><button class="link" data-go="plus">‹ Retour</button><button class="mini-action" data-edit-strategy>Modifier</button></div>
+    $('#view').innerHTML = `<div class="stack strategy-grid-layout">
+      <div class="sec-head span-3"><button class="link" data-go="plus">‹ Retour</button><button class="mini-action" data-edit-strategy>✎ Modifier mes paramètres</button></div>
 
-      <div class="tabs scenario-tabs">
-        <button data-scenario="5" class="${rate === 5 ? 'active' : ''}">Prudent 5%</button>
-        <button data-scenario="7" class="${rate === 7 ? 'active' : ''}">Central 7%</button>
-        <button data-scenario="10" class="${rate === 10 ? 'active' : ''}">Dynamique 10%</button>
-      </div>
-
-      <section class="card strategy-hero clickable-card" data-edit-strategy>
-        <small>POINT DE BASCULE</small>
-        <div class="strategy-number">${x.target ? eur(x.target) : '—'}</div>
-        <div class="subtle">Capital où le rendement annuel ≈ tes versements annuels.</div>
-        <div class="strategy-track" style="margin-top:14px"><span style="width:${Math.min(100, x.progress)}%"></span></div>
-        <div class="hero-sub" style="color:var(--ink);margin-top:7px"><span>${Math.round(x.progress)}% atteint</span><span>${monthsToText(x.basculeMonths)} · ${monthsToDate(x.basculeMonths)}</span></div>
+      <!-- 1. POINT DE BASCULE -->
+      <section class="card gauge-card span-2" data-explain="bascule">
+        <div class="sec-head"><h2>Point de bascule</h2></div>
+        <div class="gauge-layout">
+          ${semiGauge(x.progress, '#20ad6f', eur(x.gain), `Ton rendement annuel (${x.rate.toFixed(2).replace('.', ',')}%)`)}
+          <div class="gauge-target"><small>Versement annuel</small><b>${eur(x.annual)} / an</b></div>
+        </div>
+        <div class="strategy-number" style="margin-top:8px">${monthsToText(x.basculeMonths)}</div>
+        <div class="subtle">${x.basculeMonths != null ? 'Estimation : ' + monthsToDate(x.basculeMonths) : ''}</div>
+        <div class="insight" style="margin-top:12px">Le point de bascule est atteint quand le rendement annuel de ton capital est supérieur ou égal à tes versements annuels personnels.</div>
+        <div class="strategy-kpi" style="margin-top:10px"><small>Capital nécessaire (théorique)</small><b>${x.target ? eur(x.target) : '—'}</b><small class="subtle">Basé sur ${x.rate.toFixed(2).replace('.', ',')}% de rendement</small></div>
       </section>
 
-      <div class="strategy-grid">
-        <div class="strategy-kpi clickable-card" data-edit-strategy><small>Capital actuel</small><b>${eur(x.capital)}</b></div>
-        <div class="strategy-kpi clickable-card" data-edit-strategy><small>Versement mensuel</small><b>${eur(x.monthly)}</b></div>
-        <div class="strategy-kpi clickable-card" data-edit-strategy><small>Rendement estimé</small><b>${x.rate.toFixed(1).replace('.', ',')} % / an</b></div>
-        <div class="strategy-kpi"><small>Capital généré / an</small><b>${eur(x.gain)}</b></div>
-      </div>
-
-      <section class="card"><div class="sec-head"><h2>Ton argent travaille pour toi</h2></div>
-        <div class="scenario-row"><span>Tu investis</span><b>${eur(x.annual)}</b><small>/ an</small></div>
-        <div class="scenario-row"><span>Ton capital génère</span><b class="pos">${eur(x.gain)}</b><small>/ an</small></div>
-        <div class="scenario-row"><span>Soit</span><b class="pos">${eur(x.monthlyGain)}</b><small>/ mois</small></div>
-        <div class="scenario-row"><span>Soit</span><b class="pos">${eur(x.dailyGain)}</b><small>/ jour</small></div>
-        <div class="insight" style="margin-top:10px">Ton capital fournit actuellement <b>${Math.round(x.progress)}%</b> de ton effort annuel d’investissement.</div>
+      <!-- 2. PARAMÈTRES -->
+      <section class="card span-1">
+        <div class="sec-head"><h2>Vue rapide</h2></div>
+        <div class="param-row clickable" data-edit-strategy><span>Capital actuel</span><b>${eur(x.capital)}</b></div>
+        <div class="param-row clickable" data-edit-strategy><span>Versement mensuel</span><b>${eur(x.monthly)}</b></div>
+        <div class="param-row clickable" data-edit-strategy><span>Versement annuel</span><b>${eur(x.annual)}</b></div>
+        <div class="param-row clickable" data-edit-strategy><span>Rendement annuel</span><b>${x.rate.toFixed(2).replace('.', ',')} %</b></div>
+        <div class="param-row clickable" data-edit-strategy><span>Horizon de projection</span><b>${x.horizon} ans</b></div>
+        <button class="action" style="margin-top:10px" data-edit-strategy>Modifier mes paramètres</button>
       </section>
 
-      <section class="premium-note"><b>⚡ Point d’accélération</b>
-        <div class="subtle" style="margin-top:4px">Moment où ton capital génère 2× tes versements annuels.</div>
-        <div class="strategy-number" style="font-size:22px;margin-top:6px">${monthsToText(x.accelMonths)}</div>
+      <!-- 3. TON ARGENT TRAVAILLE POUR TOI / EXPRESSION DE TON CAPITAL -->
+      <section class="card span-3" id="expression-card">
+        <div class="sec-head"><h2>Expression de ton capital</h2></div>
+        <div class="expr-row">
+          <span class="expr-ic">🐷</span>
+          <div class="expr-body">
+            <b>Ton argent travaille pour toi</b>
+            <div class="expr-tiles">
+              <div class="expr-tile"><b>${eur(x.gain)}</b><small>par an</small></div>
+              <div class="expr-tile"><b>${eur(x.monthlyGain)}</b><small>par mois</small></div>
+              <div class="expr-tile"><b>${eur(x.dailyGain)}</b><small>par jour</small></div>
+            </div>
+          </div>
+        </div>
+        <div class="expr-row clickable" data-explain="bascule">
+          <span class="expr-ic">⏱️</span>
+          <div class="expr-body"><b>Ton capital travaille à ${Math.round(x.progress)}%</b><small>de ton effort annuel</small></div>
+        </div>
+        <div class="expr-row clickable" data-explain="liberte">
+          <span class="expr-ic">🕊️</span>
+          <div class="expr-body"><b>Taux de liberté financière ${x.libertyPct}%</b><small>de tes dépenses annuelles (${eur(x.annualExpenses)}) couvertes</small></div>
+        </div>
+      </section>
+
+      <!-- 4. ÉVOLUTION DE TON CAPITAL -->
+      <section class="card span-2">
+        <div class="sec-head"><h2>Évolution de ton capital</h2></div>
+        <div class="tabs metric-tabs">
+          <button data-metric="capital" class="${stratMetric === 'capital' ? 'active' : ''}">Capital total</button>
+          <button data-metric="interets" class="${stratMetric === 'interets' ? 'active' : ''}">Intérêts cumulés</button>
+          <button data-metric="versements" class="${stratMetric === 'versements' ? 'active' : ''}">Versements</button>
+        </div>
+        <div class="strategy-number" style="font-size:22px;margin-top:10px">Capital estimé dans ${x.horizon} ans : ${eur(pointAtYear(centralEngine, x.horizon)[stratMetric])}</div>
+        <div class="chart-wrap" data-chart-tooltip>
+          ${lineChartSVG('chart-evolution', scenarios.map(s => ({ color: s.color, data: engines[s.key].points.filter((_, i) => i % Math.max(1, Math.round(engines[s.key].points.length / 60)) === 0).map(p => ({ x: p.year, y: p[stratMetric] })) })), { markers: x.basculeMonths != null ? [{ x: x.basculeMonths / 12, y: pointAtYear(centralEngine, x.basculeMonths / 12)[stratMetric], color: '#128957' }] : [] })}
+          <div class="chart-tooltip" id="tt-chart-evolution" hidden></div>
+        </div>
+        <div class="chart-legend">${scenarios.map(s => `<span><i style="background:${s.color}"></i>${s.label} (${s.rate.toFixed(0)}%)</span>`).join('')}</div>
+        <div class="metric-grid" style="margin-top:10px">
+          <div class="metric"><small>Capital actuel</small><b>${eur(x.capital)}</b></div>
+          <div class="metric"><small>Total versé (${x.horizon} ans)</small><b>${eur(x.monthly * 12 * x.horizon)}</b></div>
+        </div>
+        <small class="subtle" style="display:block;margin-top:6px">👉 Survole ou touche le graphique pour voir le détail année par année.</small>
+      </section>
+
+      <!-- 5. POINT D'ACCÉLÉRATION -->
+      <section class="card gauge-card span-2" data-explain="accel">
+        <div class="sec-head"><h2>Point d’accélération</h2></div>
+        <div class="gauge-layout">
+          ${semiGauge(x.accelMonths != null ? Math.min(100, (x.gain / (x.annual * 2 || 1)) * 100) : 0, '#2f6fe4', eur(x.gain), `Ton rendement annuel (${x.rate.toFixed(2).replace('.', ',')}%)`)}
+          <div class="gauge-target"><small>Double versement annuel</small><b>${eur(x.annual * 2)} / an</b></div>
+        </div>
+        <div class="strategy-number" style="margin-top:8px">${monthsToText(x.accelMonths)}</div>
         <div class="subtle">${x.accelMonths != null ? 'Estimation : ' + monthsToDate(x.accelMonths) : ''}</div>
+        <div class="insight" style="margin-top:12px">Le point d’accélération est atteint quand le rendement annuel de ton capital est au moins deux fois supérieur à tes versements annuels personnels.</div>
+        <div class="strategy-kpi" style="margin-top:10px"><small>Capital nécessaire (théorique)</small><b>${x.target2 ? eur(x.target2) : '—'}</b><small class="subtle">Basé sur ${x.rate.toFixed(2).replace('.', ',')}% de rendement</small></div>
       </section>
 
-      <section class="card"><div class="sec-head"><h2>Taux de liberté financière</h2></div>
-        <div class="strategy-number" style="font-size:26px">${x.libertyPct}%</div>
-        <div class="subtle">De tes dépenses annuelles (${eur(x.annualExpenses)}) sont théoriquement couvertes par ton capital.</div>
+      <!-- 6. SCÉNARIOS + COMPARAISON -->
+      <section class="card span-3">
+        <div class="sec-head"><h2>Comparaison des scénarios à ${x.horizon} ans</h2></div>
+        <div class="scenario-compare">
+          ${scenarios.map(s => { const e = engines[s.key]; const last = e.points[e.points.length - 1]; const pct = last.capital ? Math.round((last.interets / last.capital) * 100) : 0; return `<div class="scenario-donut-card clickable" data-scenario="${s.rate}">
+            <small>${s.label}<br><b>${s.rate.toFixed(0)}% / an</b></small>
+            <div class="donut scenario-donut" style="background:conic-gradient(${s.color} 0% ${pct}%, #e9efeb ${pct}% 100%)"><div class="donut-center"><b>${eur(last.capital)}</b></div></div>
+            <div class="scenario-gain">+${eur(last.interets)}</div>
+          </div>`; }).join('')}
+        </div>
+        <div class="scenario-row" style="margin-top:6px"><span>Versements cumulés (identiques pour les 3 scénarios)</span><b>${eur(x.monthly * 12 * x.horizon)}</b></div>
       </section>
 
-      <section class="card"><div class="sec-head"><h2>Projection</h2></div>
-        ${[[10, p10], [20, p20], [30, p30]].map(a => `<div class="scenario-row"><span>Dans ${a[0]} ans</span><b>${eur(a[1])}</b><small>à ${x.rate.toFixed(1)}%</small></div>`).join('')}
-        <small class="subtle">Simulation indicative : le rendement réel n’est pas garanti.</small>
+      <!-- 7. ET SI ? -->
+      <section class="card span-2">
+        <div class="sec-head"><h2>Simulation « Et si ? »</h2></div>
+        <div class="subtle">Ajuste ton versement mensuel</div>
+        <div class="whatif-slider-row">
+          <input type="range" id="stratWhatifSlider" min="100" max="1000" step="10" value="${stratWhatIfDelta}">
+          <b id="stratWhatifValue">${eur(stratWhatIfDelta)} / mois</b>
+        </div>
+        <div id="whatifStratResult">${whatIfStrategyBlock(stratWhatIfDelta, x)}</div>
       </section>
 
-      <section class="card"><div class="sec-head"><h2>Et si j’investissais plus ?</h2></div>
-        <div class="two"><label>Versement supplémentaire (€/mois)<input type="number" id="whatifStratInput" min="0" step="10" value="100"></label><div></div></div>
-        <div id="whatifStratResult" class="insight" style="margin-top:8px">${whatIfStrategyText(100, x)}</div>
+      <!-- 8. PROJECTION DÉTAILLÉE -->
+      <section class="card span-2">
+        <div class="sec-head"><h2>Projection détaillée</h2></div>
+        <div class="tabs proj-tabs">${scenarios.map(s => `<button data-proj="${s.key}" class="${stratProjScenario === s.key ? 'active' : ''}">${s.label} ${s.rate.toFixed(0)}%</button>`).join('')}</div>
+        <div class="chart-wrap" data-chart-tooltip>
+          ${(() => { const e = engines[stratProjScenario] || centralEngine; const sample = e.points.filter((_, i) => i % Math.max(1, Math.round(e.points.length / 60)) === 0);
+            return lineChartSVG('chart-projection', [
+              { color: '#128957', data: sample.map(p => ({ x: p.year, y: p.capital })) },
+              { color: '#728077', dash: '5 4', data: sample.map(p => ({ x: p.year, y: p.versements })) },
+              { color: '#2781d8', dash: '2 4', data: sample.map(p => ({ x: p.year, y: p.interets })) }
+            ]); })()}
+          <div class="chart-tooltip" id="tt-chart-projection" hidden></div>
+        </div>
+        <div class="chart-legend"><span><i style="background:#128957"></i>Capital total</span><span><i style="background:#728077"></i>Versements cumulés</span><span><i style="background:#2781d8"></i>Intérêts cumulés</span></div>
+      </section>
+
+      <!-- 9. REPÈRES -->
+      <section class="card span-1" id="reperes-card">
+        <div class="sec-head"><h2>Repères clés</h2></div>
+        <div class="subtle" style="margin-bottom:6px">Scénario ${(scenarios.find(s => s.key === stratProjScenario) || scenarios[1]).label} (${(scenarios.find(s => s.key === stratProjScenario) || scenarios[1]).rate.toFixed(0)}%)</div>
+        <div class="reperes-list">
+          ${snapshotYears(x.horizon).map(y => { const e = engines[stratProjScenario] || centralEngine; const p = pointAtYear(e, y); return `<div class="repere-row"><b>${new Date().getFullYear() + Math.round(y)}</b><span>${eur(p.capital)}</span><small>versé ${eur(p.versements)} · intérêts ${eur(p.interets)}</small></div>`; }).join('')}
+        </div>
+      </section>
+
+      <!-- INFORMATIONS IMPORTANTES -->
+      <section class="card span-3 info-card">
+        <div class="sec-head"><h2>Informations importantes</h2></div>
+        <ul class="info-list">
+          <li>Les rendements affichés sont des hypothèses, pas des garanties.</li>
+          <li>Les performances passées ne préjugent pas des performances futures.</li>
+          <li>Investir comporte un risque de perte en capital.</li>
+          <li>Réinvestir les gains accélère fortement la croissance (effet composé).</li>
+          <li>Commencer tôt est ton plus grand avantage.</li>
+          <li>L’inflation n’est pas prise en compte dans ces projections.</li>
+        </ul>
+        <div class="insight" style="margin-top:8px"><b>Ces projections ne garantissent aucun rendement futur.</b></div>
       </section>
     </div>`;
+
+    const projScenario = scenarios.find(s => s.key === stratProjScenario) || scenarios[1];
+    chartData['chart-evolution'] = { type: 'multi', maxYear: x.horizon, getMetric: () => stratMetric, series: scenarios.map(s => ({ label: s.label, rate: s.rate, color: s.color, points: engines[s.key].points })) };
+    chartData['chart-projection'] = { type: 'single', maxYear: x.horizon, series: [{ label: projScenario.label, points: (engines[stratProjScenario] || centralEngine).points }] };
   }
 
-  function whatIfStrategyText(delta, base) {
-    const withDelta = simulateStrategy(base.capital, base.monthly + num(delta), base.rate);
+  function whatIfStrategyBlock(delta, base) {
+    const withDelta = financeEngine(base.capital, base.monthly + num(delta), base.rate, base.horizon);
     const gainedMonths = (base.basculeMonths ?? 0) - (withDelta.basculeMonth ?? 0);
-    return `+${eur(delta)}/mois → point de bascule atteint ${gainedMonths > 0 ? gainedMonths + ' mois plus tôt' : 'à la même échéance environ'} (${monthsToText(withDelta.basculeMonth)}). Capital à 20 ans : ${eur(projectCapital(20, base.capital, base.monthly + num(delta), base.rate))}.`;
+    const capH = base.engine.finalCapital, capHDelta = withDelta.finalCapital;
+    const intH = base.engine.finalInterets, intHDelta = withDelta.finalInterets;
+    return `
+      <div class="whatif-row"><span>Impact sur ton point de bascule</span><b class="pos">${gainedMonths > 0 ? '−' + monthsToText(gainedMonths) : (gainedMonths < 0 ? '+' + monthsToText(-gainedMonths) : '±0')}</b></div>
+      <div class="whatif-row"><span>Nouveau point de bascule</span><b>${monthsToText(withDelta.basculeMonth)} · ${monthsToDate(withDelta.basculeMonth)}</b></div>
+      <div class="whatif-row"><span>Capital estimé à ${base.horizon} ans</span><b class="pos">+${eur(capHDelta - capH)}</b><small>(${eur(capHDelta)} au lieu de ${eur(capH)})</small></div>
+      <div class="whatif-row"><span>Intérêts supplémentaires</span><b class="pos">+${eur(intHDelta - intH)}</b><small>sur ${base.horizon} ans</small></div>
+    `;
   }
+
+  function nearestChartPoint(points, year) {
+    let best = points[0];
+    for (const p of points) { if (Math.abs(p.year - year) < Math.abs(best.year - year)) best = p; }
+    return best;
+  }
+
+  function chartYearFromClientX(svg, clientX, maxYear) {
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width) return 0;
+    const relX = Math.min(rect.width, Math.max(0, clientX - rect.left));
+    const vbX = relX * (CHART_W / rect.width);
+    const plotW = CHART_W - CHART_PAD_L - CHART_PAD_R;
+    const frac = Math.min(1, Math.max(0, (vbX - CHART_PAD_L) / plotW));
+    return frac * maxYear;
+  }
+
+  function handleChartHover(e) {
+    const svg = e.target.closest('svg.chart-svg');
+    // masquer toute info-bulle si le pointeur n'est plus sur un graphique
+    Object.keys(chartData).forEach(id => { const tt = document.getElementById('tt-' + id); if (tt && (!svg || svg.id !== id)) tt.hidden = true; });
+    if (!svg) return;
+    const data = chartData[svg.id];
+    const tooltip = document.getElementById('tt-' + svg.id);
+    if (!data || !tooltip) return;
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const year = chartYearFromClientX(svg, clientX, data.maxYear);
+    const yearLabel = new Date().getFullYear() + Math.round(year);
+    let html = `<div class="tt-year">Année ${yearLabel}</div>`;
+    if (data.type === 'multi') {
+      const metric = data.getMetric();
+      const metricLabel = { capital: 'Capital total', interets: 'Intérêts cumulés', versements: 'Versements cumulés' }[metric];
+      html += `<div class="tt-metric">${metricLabel}</div>`;
+      data.series.forEach(s => { const p = nearestChartPoint(s.points, year); html += `<div class="tt-row"><i style="background:${s.color}"></i>${s.label} (${s.rate.toFixed(0)}%) <b>${eur(p[metric])}</b></div>`; });
+    } else {
+      const p = nearestChartPoint(data.series[0].points, year);
+      html += `<div class="tt-row"><span>Capital total</span><b>${eur(p.capital)}</b></div><div class="tt-row"><span>Versements cumulés</span><b>${eur(p.versements)}</b></div><div class="tt-row"><span>Intérêts cumulés</span><b>${eur(p.interets)}</b></div>`;
+    }
+    tooltip.innerHTML = html;
+    tooltip.hidden = false;
+    const rect = svg.getBoundingClientRect();
+    const clampedLeft = Math.min(rect.width - 10, Math.max(10, clientX - rect.left));
+    tooltip.style.left = clampedLeft + 'px';
+  }
+  document.addEventListener('mousemove', handleChartHover);
+  document.addEventListener('touchmove', e => { handleChartHover(e); }, { passive: true });
+  document.addEventListener('mouseleave', () => { Object.keys(chartData).forEach(id => { const tt = document.getElementById('tt-' + id); if (tt) tt.hidden = true; }); });
 
   function menuRow(ic, title, sub, action) { return `<div class="row clickable" ${action || ''}><div class="ico">${ic}</div><div class="row-main"><b>${title}</b>${sub ? `<small>${sub}</small>` : ''}</div><span class="chev">›</span></div>`; }
 
@@ -1028,11 +1296,19 @@
 
   function strategyForm() {
     const s = extra.strategy || {};
+    const r = s.scenarioRates || { prudent: 5, central: 7, dynamique: 10 };
     openSheet('Régler Ma stratégie', `<form class="form" id="strategyForm">
       <label>Capital déjà investi (€)<input type="number" min="0" step="0.01" name="capital" value="${num(s.capital)}"></label>
       <label>Versement mensuel (€)<input type="number" min="0" step="0.01" name="monthly" value="${num(s.monthly)}"></label>
       <label>Rendement annuel estimé (%)<input type="number" min="0" max="50" step="0.1" name="rate" value="${num(s.rate)}"></label>
+      <label>Horizon de projection (années)<input type="number" min="5" max="50" step="1" name="horizon" value="${num(s.horizon) || 20}"></label>
       <div class="insight">Le point de bascule correspond au moment où le rendement annuel théorique devient supérieur ou égal à tes versements annuels. Ces projections ne garantissent aucun rendement futur.</div>
+      <div class="group-title" style="margin:4px 0 0">Taux des 3 scénarios de comparaison</div>
+      <div class="two">
+        <label>Prudent (%)<input type="number" min="0" max="50" step="0.1" name="rPrudent" value="${num(r.prudent) || 5}"></label>
+        <label>Central (%)<input type="number" min="0" max="50" step="0.1" name="rCentral" value="${num(r.central) || 7}"></label>
+      </div>
+      <label>Dynamique (%)<input type="number" min="0" max="50" step="0.1" name="rDynamique" value="${num(r.dynamique) || 10}"></label>
       <button class="action">Recalculer ma stratégie</button>
     </form>`);
   }
@@ -1214,6 +1490,16 @@
 
     const rf = e.target.closest('[data-range]'); if (rf) { planningRange = +rf.dataset.range; render(); return; }
     const sc = e.target.closest('[data-scenario]'); if (sc) { stratPreviewRate = +sc.dataset.scenario; render(); return; }
+    const mt = e.target.closest('[data-metric]'); if (mt) { stratMetric = mt.dataset.metric; render(); return; }
+    const pj = e.target.closest('[data-proj]'); if (pj) { stratProjScenario = pj.dataset.proj; render(); return; }
+    const xp = e.target.closest('[data-explain]'); if (xp) {
+      const texts = {
+        bascule: 'Le point de bascule est le moment où le rendement annuel théorique de ton capital devient supérieur ou égal à ce que tu investis toi-même chaque année. À partir de là, ton capital « travaille » autant que toi.',
+        accel: 'Le point d’accélération est atteint quand le rendement annuel de ton capital dépasse deux fois tes versements annuels : la croissance vient alors majoritairement du capital, plus de ton effort d’épargne.',
+        liberte: 'Le taux de liberté financière compare les revenus théoriques de ton capital à tes dépenses annuelles réelles (calculées depuis Budget Orion). À 100%, ton capital couvrirait à lui seul ton train de vie.'
+      };
+      return openSheet('Explication', `<div class="insight">${texts[xp.dataset.explain] || ''}</div>`);
+    }
 
     const f = e.target.closest('[data-filter]'); if (f) { txFilter = f.dataset.filter; render(); return; }
     const sh = e.target.closest('[data-shift]'); if (sh) { month += +sh.dataset.shift; if (month < 0) { month = 11; year--; } if (month > 11) { month = 0; year++; } saveBudget(); render(); return; }
@@ -1234,7 +1520,12 @@
 
   document.addEventListener('input', e => {
     if (e.target.id === 'whatifSavingsInput') { $('#whatifSavingsResult').innerHTML = whatIfSavingsText(num(e.target.value)); }
-    if (e.target.id === 'whatifStratInput') { const rate = stratPreviewRate != null ? stratPreviewRate : num(extra.strategy?.rate); $('#whatifStratResult').innerHTML = whatIfStrategyText(num(e.target.value), strategyCalc(rate)); }
+    if (e.target.id === 'stratWhatifSlider') {
+      stratWhatIfDelta = num(e.target.value);
+      const rate = stratPreviewRate != null ? stratPreviewRate : num(extra.strategy?.rate);
+      $('#stratWhatifValue').textContent = eur(stratWhatIfDelta) + ' / mois';
+      $('#whatifStratResult').innerHTML = whatIfStrategyBlock(stratWhatIfDelta, strategyCalc(rate));
+    }
     if (e.target.id === 'txName') { const brandHint = document.querySelector('.brand-hint'); const b = brandOf(e.target.value, $('#txForm')?.cat?.value); if (brandHint) { if (b.matched) { brandHint.innerHTML = `<span class="brandmark ${b.cls}">${b.mark}</span> Reconnu : <b>${esc(b.label)}</b>`; brandHint.style.display = ''; } else brandHint.style.display = 'none'; } }
   });
 
@@ -1242,7 +1533,20 @@
     e.preventDefault();
     const fd = new FormData(e.target);
     if (e.target.id === 'txForm') return saveTx(fd);
-    if (e.target.id === 'strategyForm') { extra.strategy = { capital: Math.max(0, num(fd.get('capital'))), monthly: Math.max(0, num(fd.get('monthly'))), rate: Math.max(0, num(fd.get('rate'))) }; stratPreviewRate = null; saveExtra(); closeSheet(); page = 'strategy'; render(); return; }
+    if (e.target.id === 'strategyForm') {
+      extra.strategy = {
+        capital: Math.max(0, num(fd.get('capital'))),
+        monthly: Math.max(0, num(fd.get('monthly'))),
+        rate: Math.max(0, num(fd.get('rate'))),
+        horizon: Math.max(5, Math.min(50, num(fd.get('horizon')) || 20)),
+        scenarioRates: {
+          prudent: Math.max(0, num(fd.get('rPrudent')) || 5),
+          central: Math.max(0, num(fd.get('rCentral')) || 7),
+          dynamique: Math.max(0, num(fd.get('rDynamique')) || 10)
+        }
+      };
+      stratPreviewRate = null; saveExtra(); closeSheet(); page = 'strategy'; render(); return;
+    }
     if (e.target.id === 'birthdayForm') { const i = fd.get('idx'); const o = { name: fd.get('name').trim(), birthDate: fd.get('birthDate'), budget: num(fd.get('budget')), reminder: num(fd.get('reminder')), note: fd.get('note') }; i === '' ? extra.birthdays.push(o) : extra.birthdays[+i] = o; saveExtra(); closeSheet(); render(); return; }
     if (e.target.id === 'goalForm') {
       const id = fd.get('itemId');
