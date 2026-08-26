@@ -40,6 +40,20 @@
   function dateLabelLong(s) { if (!s) return '—'; const d = new Date(s + 'T12:00:00'); return d.toLocaleDateString('fr-FR', { day:'numeric', month:'long', year:'numeric' }); }
   const brandOf = (name, cat) => (window.ORION_BRANDS ? window.ORION_BRANDS.identify(name, cat) : { mark:'•', cls:'brand-generic', matched:false, suggestedCat: cat || 'autres' });
 
+  /* Bus d'événements interne (léger) + toast — synchronisation + retours visuels.
+     Toute écriture de données émet 'budget:dataChanged'. Aucun framework. */
+  const Bus = (() => { const map = {}; return {
+    on: (ev, fn) => { (map[ev] = map[ev] || []).push(fn); },
+    emit: (ev, data) => { (map[ev] || []).forEach(fn => { try { fn(data); } catch (_) {} }); }
+  }; })();
+  window.ORION_BUS = Bus;
+  let _toastEl = null, _toastTimer = null;
+  function toast(msg) {
+    if (!_toastEl) { _toastEl = document.createElement('div'); _toastEl.className = 'home-toast'; document.body.appendChild(_toastEl); }
+    _toastEl.textContent = msg; _toastEl.classList.add('show');
+    clearTimeout(_toastTimer); _toastTimer = setTimeout(() => _toastEl.classList.remove('show'), 2200);
+  }
+
   /* ---------------------------------------------------------------------
      1. STOCKAGE — clés, chargement, migrations versionnées, sauvegardes
      ------------------------------------------------------------------- */
@@ -163,12 +177,12 @@
   const chartData = {}; // stocke les points de données par id de graphique pour les info-bulles au survol
   const key = () => `${year}-${p2(month + 1)}`;
 
-  function saveBudget() { budget.currentYear = year; budget.currentMonth = month; budget.schema = SCHEMA_VERSION; try { localStorage.setItem(KEY_BUDGET, JSON.stringify(budget)); } catch {} }
+  function saveBudget() { budget.currentYear = year; budget.currentMonth = month; budget.schema = SCHEMA_VERSION; try { localStorage.setItem(KEY_BUDGET, JSON.stringify(budget)); } catch {} Bus.emit('budget:dataChanged', { source: 'budget' }); }
   // Persiste immédiatement si une migration de schéma vient d'avoir lieu, pour ne pas
   // la relancer (et resnapshot) à chaque chargement tant qu'aucune autre action n'a sauvegardé.
   if (budget.__justMigrated) { delete budget.__justMigrated; saveBudget(); }
-  function saveExtra() { try { localStorage.setItem(KEY_EXTRA, JSON.stringify(extra)); } catch {} }
-  function saveGoals() { try { localStorage.setItem(KEY_GOALS, JSON.stringify(goals)); } catch {} }
+  function saveExtra() { try { localStorage.setItem(KEY_EXTRA, JSON.stringify(extra)); } catch {} Bus.emit('budget:dataChanged', { source: 'extra' }); }
+  function saveGoals() { try { localStorage.setItem(KEY_GOALS, JSON.stringify(goals)); } catch {} Bus.emit('budget:dataChanged', { source: 'goals' }); }
 
   /* ---------------------------------------------------------------------
      2. MOTEUR DE RÉCURRENCE
@@ -661,54 +675,214 @@
   /* ---------------------------------------------------------------------
      10. ÉCRANS
      ------------------------------------------------------------------- */
+  /* ---- Accueil : helpers dédiés (lecture seule sur les données centrales) ---- */
+  function daysLeftInSelectedMonth() {
+    const last = lastDayOfMonth(year, month);
+    const now = new Date();
+    if (now.getFullYear() === year && now.getMonth() === month) return Math.max(0, last - now.getDate());
+    const firstSel = new Date(year, month, 1);
+    const todayMid = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    return firstSel > todayMid ? last : 0; // mois futur : mois entier ; mois passé : 0
+  }
+  function homeEventColor(days, isBirthday) {
+    if (isBirthday) return 'pink';
+    if (days == null) return 'green';
+    if (days <= 0) return 'red';
+    if (days <= 3) return 'orange';
+    return 'green';
+  }
+  function homeWhenLabel(days, isBirthday) {
+    if (days == null) return isBirthday ? 'À venir' : 'Sans date';
+    if (days < 0) return `En retard de ${-days} j`;
+    if (days === 0) return "Aujourd'hui";
+    if (days === 1) return 'Demain';
+    return `Dans ${days} jours`;
+  }
+  function homeTimelineEvents() {
+    const mo = monthObj();
+    const list = [];
+    (mo.expenses || []).forEach((r, idx) => { if (!r.paid && r.dueDate) list.push({ kind: 'expense', name: r.name, cat: r.cat, amount: num(r.amount), date: r.dueDate, days: daysUntilDate(r.dueDate), idx }); });
+    extra.birthdays.forEach((b, i) => { const n = birthdayNext(b); if (n && n.days >= 0 && n.days <= 45) list.push({ kind: 'birthday', name: b.name, amount: num(b.budget), date: n.date, days: n.days, i, age: n.age }); });
+    list.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    return list.slice(0, 4);
+  }
+  function homeSavingsInfo() {
+    const mo = monthObj(), t = totals();
+    const engagement = (extra.pockets || []).reduce((s, p) => s + num(p.monthlyTarget), 0);
+    const validated = !!(mo.savings && mo.savings.paid);
+    const amount = num(mo.savings?.amount);
+    const realized = validated ? amount : 0;
+    const pctRev = t.pin > 0 ? Math.round((realized / t.pin) * 100) : 0;
+    const pctEng = engagement > 0 ? Math.round((realized / engagement) * 100) : null;
+    const hist = Object.keys(budget.monthlyData).filter(k => k <= key()).sort().slice(-6)
+      .map(k => { const s = budget.monthlyData[k]?.savings; return s && s.paid ? num(s.amount) : 0; });
+    return { engagement, validated, amount, realized, pctRev, pctEng, hist };
+  }
+  function homeSparkline(vals) {
+    if (!vals || vals.length < 2 || vals.every(v => v === 0)) return '';
+    const w = 100, h = 26, max = Math.max(...vals, 1), min = Math.min(...vals, 0), rng = (max - min) || 1;
+    const pts = vals.map((v, i) => `${(i / (vals.length - 1)) * w},${(h - 2) - ((v - min) / rng) * (h - 5)}`).join(' ');
+    return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="home-spark"><polyline points="${pts}" fill="none" stroke="#12a45f" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  // Insights priorisés et CLIQUABLES, dérivés des données existantes (aucun 2e moteur).
+  function homeInsights() {
+    const out = [], t = totals(), mo = monthObj();
+    const now = new Date(), isFuture = (year > now.getFullYear()) || (year === now.getFullYear() && month > now.getMonth());
+    if (!isFuture && !(mo.savings && mo.savings.paid) && t.pin > 0)
+      out.push({ icon: '🐷', level: 'action', text: 'Pense à confirmer ton épargne du mois.', attr: 'data-edit-month-saving' });
+    const avg = monthlyAverageExpenses(key()) || 0;
+    const big = upcomingExpenses().map(r => ({ r, d: daysUntilDate(r.dueDate) })).filter(x => x.d != null && x.d >= 0 && x.d <= 7).sort((a, b) => num(b.r.amount) - num(a.r.amount))[0];
+    if (big && num(big.r.amount) >= Math.max(120, avg * 0.2)) {
+      const idx = mo.expenses.indexOf(big.r);
+      out.push({ icon: '⚠️', level: 'critical', text: `Attention : ${eur(big.r.amount)} prévus dans ${big.d} jour${big.d > 1 ? 's' : ''} (${esc(big.r.name)}).`, attr: `data-edit-tx="expense" data-index="${idx}"` });
+    }
+    try { installmentItems().forEach(i => { if (i.remainingCount === 0 && i.currentIndex === num(i.installments) - 1) out.push({ icon: '✅', level: 'good', text: `Bonne nouvelle : ${eur(i.amount)}/mois libérés le mois prochain (${esc(i.name)}).`, attr: 'data-go="planning"' }); }); } catch (_) {}
+    try { annualItems().filter(a => a.cat === 'abonnements' && a.annual > 150).sort((a, b) => b.annual - a.annual).slice(0, 1).forEach(a => { const idx = mo.expenses.findIndex(r => (r.name || '') === a.name); out.push({ icon: '💳', level: 'info', text: `${esc(a.name)} te coûte ${eur(a.annual)}/an.`, attr: idx >= 0 ? `data-edit-tx="expense" data-index="${idx}"` : 'data-go="analysis"' }); }); } catch (_) {}
+    const ct = catTotals(mo, false); const ess = ESSENTIAL_CATS.reduce((s, c) => s + num(ct[c]), 0);
+    if (t.tin > 0) { const pf = Math.round((ess / t.tin) * 100); if (pf >= 40) out.push({ icon: '📊', level: 'info', text: `Tes charges fixes représentent ${pf} % de tes revenus.`, attr: 'data-go="analysis"' }); }
+    const rank = { critical: 0, action: 1, good: 2, info: 3 };
+    return out.sort((a, b) => rank[a.level] - rank[b.level]).slice(0, 3);
+  }
+  function homeExplain(kind) {
+    const t = totals(), mo = monthObj();
+    const line = (l, v, c, attr) => `<div class="row${attr ? ' clickable' : ''}" ${attr || ''}><div class="row-main"><b>${l}</b></div><b class="${c || ''}">${v}</b></div>`;
+    let title = 'Détail', body = '';
+    if (kind === 'solde') {
+      title = 'Solde disponible';
+      body = `<section class="card">${line('Revenus reçus', eur(t.pin))}${line('Dépenses déjà prélevées', '- ' + eur(t.pex), 'neg')}${line('= Solde disponible', eur(t.current))}</section><div class="insight">L’argent réellement présent : revenus déjà reçus moins dépenses déjà prélevées.</div>`;
+    } else if (kind === 'engage') {
+      title = 'Argent déjà engagé';
+      const items = (mo.expenses || []).filter(r => !r.paid).slice().sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+      body = `<section class="card">${line('Compte (solde disponible)', eur(t.current))}${line('Total engagé ce mois', eur(t.tex))}${line('Déjà prélevé', eur(t.pex))}${line('Prélèvements restant à venir', '- ' + eur(t.future), 'neg')}${line('Disponible réel estimé', eur(t.current - t.future), (t.current - t.future) >= 0 ? 'pos' : 'neg')}</section>
+        <div class="sec-head" style="margin-top:6px"><h2>Prélèvements restant à venir</h2></div>
+        <section class="card list">${items.length ? items.map(r => { const idx = mo.expenses.indexOf(r); const br = brandOf(r.name, r.cat); const di = dueInfo(r); return `<div class="row clickable" data-edit-tx="expense" data-index="${idx}"><div class="brandmark ${br.cls}">${br.mark}</div><div class="row-main"><b>${esc(r.name)}</b><small>${di.label}${r.dueDate ? ' · ' + dateLabel(r.dueDate) : ''}</small></div><b>-${eur(r.amount)}</b></div>`; }).join('') : '<div class="empty">✓ Tout est réglé pour ce mois.</div>'}</section>`;
+    } else if (kind === 'projection') {
+      title = 'Projection fin de mois';
+      body = `<section class="card">${line('Revenus reçus', eur(t.pin))}${line('Dépenses totales prévues', '- ' + eur(t.tex), 'neg')}${line('= Projection', eur(t.final))}</section><div class="insight">Estimation si toutes les dépenses prévues se prélèvent et sans nouveau revenu. Revenus encore à recevoir : ${eur(t.tin - t.pin)}.</div>`;
+    } else if (kind === 'revenus') {
+      title = 'Revenus reçus';
+      const inc = (mo.income || []);
+      body = `<section class="card list">${inc.length ? inc.map(r => `<div class="row clickable" data-edit-tx="income" data-index="${mo.income.indexOf(r)}"><div class="row-main"><b>${esc(r.name)}</b><small>${(r.paid || isAutoIncome(r)) ? 'Reçu' : 'En attente'}</small></div><b class="pos">+${eur(r.amount)}</b></div>`).join('') : '<div class="empty">Aucun revenu.</div>'}</section>`;
+    }
+    openSheet(title, body);
+  }
+  function homeTopay() {
+    const mo = monthObj();
+    const items = (mo.expenses || []).filter(r => !r.paid).slice().sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+    if (!items.length) { toast('✓ Tout est réglé pour ce mois'); return; }
+    const body = `<section class="card list">${items.map(r => { const idx = mo.expenses.indexOf(r); const br = brandOf(r.name, r.cat); const di = dueInfo(r); return `<div class="row"><button class="tx-check ${di.cls}" data-toggle="expense" data-index="${idx}" aria-label="Marquer payé"></button><div class="brandmark ${br.cls}">${br.mark}</div><div class="row-main clickable" data-edit-tx="expense" data-index="${idx}"><b>${esc(r.name)}</b><small>${di.label}${r.dueDate ? ' · ' + dateLabel(r.dueDate) : ''}</small></div><b class="amt">-${eur(r.amount)}</b></div>`; }).join('')}</section>`;
+    openSheet('À payer ce mois', body);
+  }
+
   function renderHome() {
     setTitle('Budget Orion');
-    const t = totals();
-    const bds = extra.birthdays.map(b => ({ b, n: birthdayNext(b) })).filter(x => x.n && x.n.days <= 45).sort((a, b) => a.n.days - b.n.days);
-    const up = upcomingExpenses().slice(0, 3);
+    const t = totals(), mo = monthObj();
+    const solde = t.current, engage = t.tex, aPayer = t.future, projection = t.final;
+    const paidPct = t.tex > 0 ? Math.max(0, Math.min(100, Math.round((t.pex / t.tex) * 100))) : 0;
+    const bubbleLeft = Math.max(8, Math.min(92, paidPct));
+    const last = lastDayOfMonth(year, month);
+    const jours = daysLeftInSelectedMonth();
+    const events = homeTimelineEvents();
+    const ins = homeInsights();
+
+    const sv = homeSavingsInfo();
     const goal = goals[0];
     const gp = goal && num(goal.target) ? Math.min(100, Math.round((num(goal.current) / num(goal.target)) * 100)) : 0;
-    const pct = Math.max(0, Math.min(100, t.paidPct));
-    const engaged = t.future; // prélèvements restant à venir ce mois-ci
-    const dispoReel = t.current - Math.max(0, engaged);
+    const strat = strategyCalc();
+    const bMonths = strat.basculeMonths;
+
+    const prevKey = monthKeyAdd(key(), -1);
+    const prevMo = budget.monthlyData[prevKey];
+    const prevT = prevMo ? totals(prevMo) : null;
+    const prevName = ML[(month + 11) % 12];
+    const dRev = prevT ? (t.pin - prevT.pin) : null;
+    const dExp = prevT ? (t.tex - prevT.tex) : null;
+    const dFut = prevT ? (t.future - prevT.future) : null;
+    const dFin = prevT ? (t.final - prevT.final) : null;
+
+    const glanceHidden = localStorage.getItem('orion_ui_glanceHidden') === '1';
+    const gv = v => glanceHidden ? '••••' : eur(v);
+    const delta = (d, goodWhenUp) => d == null ? '' : `<div class="gvs ${(d >= 0) === goodWhenUp ? 'up-good' : 'up-bad'}">${d >= 0 ? '+' : '−'}${eur(Math.abs(d))} vs ${prevName}</div>`;
+
+    const timelineRows = events.length ? events.map(ev => {
+      const color = homeEventColor(ev.days, ev.kind === 'birthday');
+      const when = homeWhenLabel(ev.days, ev.kind === 'birthday');
+      const br = ev.kind === 'birthday' ? { mark: '🎂', cls: 'brand-generic' } : brandOf(ev.name, ev.cat);
+      const sub = ev.kind === 'birthday' ? `${dateLabel(ev.date)} · Budget prévu : ${eur(ev.amount)}` : `${dateLabel(ev.date)} · ${CATS[ev.cat] || 'Autres'}`;
+      const attr = ev.kind === 'birthday' ? `data-edit-birthday="${ev.i}"` : `data-edit-tx="expense" data-index="${ev.idx}"`;
+      const amt = ev.kind === 'birthday' ? `<span class="tl-amt when-pink">${eur(ev.amount)}</span>` : `<span class="tl-amt">-${eur(ev.amount)}</span>`;
+      return `<div class="tl-row clickable" ${attr}>
+        <div class="home-tl-dotcol"><span class="home-tl-dot dot-${color}"></span></div>
+        <div class="brandmark tl-logo ${br.cls}">${br.mark}</div>
+        <div class="tl-main"><div class="tl-when when-${color}">${when}</div><b>${esc(ev.name)}</b><small>${sub}</small></div>
+        ${amt}<span class="tl-chev">›</span>
+      </div>`;
+    }).join('') : '<div class="empty">✓ Tout est à jour pour ce mois — aucun événement à venir.</div>';
+
+    const savingsCard = sv.validated
+      ? `<button class="home-smart clickable-card" data-go="savings"><span class="badge">🐷</span><div class="st">Épargne ce mois</div><div class="sb">${eur(sv.realized)}</div><div class="ss">${sv.pctEng != null ? sv.pctEng + '% de ton engagement' : sv.pctRev + '% de tes revenus'}</div>${homeSparkline(sv.hist)}</button>`
+      : `<button class="home-smart sv-topay clickable-card" data-edit-month-saving><span class="badge">🐷</span><div class="st">Épargne ce mois</div><div class="sb" style="font-size:15px;color:#f0932b">À valider</div><div class="ss">${sv.engagement > 0 ? 'Engagement : ' + eur(sv.engagement) : 'Confirme ton versement'}</div></button>`;
 
     $('#view').innerHTML = `<div class="stack">
-      <section class="hero">
-        <div class="ring" style="--pct:${pct}%"><b>${pct}%</b></div>
-        <div class="label">Solde actuel</div>
-        <strong class="clickable" data-edit-month-saving>${eur(t.current)}</strong>
-        <small>Revenus reçus ${eur(t.pin)} · dépenses prélevées ${eur(t.pex)}</small>
-        <div class="progress"><span style="width:${pct}%"></span></div>
-        <div class="hero-sub"><span>À payer : ${eur(t.future)}</span><span>Fin de mois : ${eur(t.final)}</span></div>
+      <section class="home-main">
+        <div class="home-cols">
+          <button class="home-col" data-home-explain="solde"><div class="lbl">Solde disponible <span class="home-i">i</span></div><div class="val">${eur(solde)}</div><div class="sub">Argent réellement dispo sur ton compte</div></button>
+          <button class="home-col center" data-home-explain="engage"><div class="lbl">Déjà engagé <span class="home-i">i</span></div><div class="val">${eur(engage)}</div><div class="sub">Prélèvements à venir et engagements</div></button>
+          <button class="home-col" data-home-explain="projection"><div class="lbl">Projection <span class="home-i">i</span></div><div class="val">${eur(projection)}</div><div class="sub">Estimation si rien ne change d’ici là</div></button>
+        </div>
+        <div class="home-barwrap">
+          <div class="home-bubble" style="left:${bubbleLeft}%">${paidPct}%</div>
+          <div class="home-bar"><span class="paid" style="width:${paidPct}%"></span><span class="rest" style="width:${100 - paidPct}%"></span></div>
+        </div>
+        <div class="home-barrow"><span class="d1">Revenus reçus ${eur(t.pin)}</span><span class="d2">Dépenses prévues ${eur(t.tex)}</span></div>
+        <div class="home-split">
+          <button data-home-topay><div class="ic">▤</div><div><div class="s-lbl">À payer avant le ${last} ${ML[month].toLowerCase()}</div><div class="s-val">${eur(aPayer)}</div></div><div class="chev">›</div></button>
+          <div class="sep"></div>
+          <button data-edit-period><div class="ic">▦</div><div><div class="s-lbl">Jours restants dans le mois</div><div class="s-val">${jours} jour${jours > 1 ? 's' : ''}</div></div><div class="chev">›</div></button>
+        </div>
       </section>
 
-      <section class="card engaged-card clickable" data-go="planning">
-        <div class="sec-head"><h2>Argent déjà engagé</h2></div>
-        <div class="engaged-row"><span>Compte</span><b>${eur(t.current)}</b></div>
-        <div class="engaged-row"><span>Prélèvements restant à venir</span><b class="neg">- ${eur(Math.max(0, engaged))}</b></div>
-        <div class="engaged-row total"><span>Disponible réel estimé</span><b class="${dispoReel >= 0 ? 'pos' : 'neg'}">${eur(dispoReel)}</b></div>
+      <section class="home-quick">
+        <button data-go="goals"><span class="qi">◎</span>Objectifs</button>
+        <button data-go="strategy"><span class="qi">↗</span>Ma stratégie</button>
+        <button data-go="savings"><span class="qi">🐷</span>Épargne</button>
+        <button data-go="planning"><span class="qi">▦</span>Planification</button>
+        <button data-add-tx><span class="qi">＋</span>Ajouter dépense</button>
+        <button data-go="plus"><span class="qi">•••</span>Plus</button>
       </section>
 
-      ${insightsBlock()}
+      ${ins.length ? `<section class="card home-ins"><div class="sec-head"><h2>Ce que Budget Orion remarque</h2></div>${ins.map(i => `<div class="insight-row lvl-${i.level} clickable" ${i.attr}><span class="insight-ic">${i.icon}</span><span>${i.text}</span><span class="tl-chev">›</span></div>`).join('')}</section>` : ''}
 
-      ${bds.length ? `<div><div class="sec-head"><h2>Prévisions &amp; Anticipations</h2><button class="link" data-go="planning">Voir tout ›</button></div>
-        <section class="card anticip" data-go="birthdays"><div class="big">🎂 Anniversaires</div><div class="meta">À venir · ${esc(bds[0].b.name)}</div><div class="days">${bds[0].n.days === 0 ? 'Aujourd’hui' : bds[0].n.days + ' jours restants'}</div><div class="meta">Âge : ${bds[0].n.age} ans · Budget ${eur(bds[0].b.budget)}</div></section></div>` : ''}
+      <section class="card">
+        <div class="sec-head"><h2>À venir</h2><button class="link" data-go="planning">Voir tout ›</button></div>
+        <div class="home-tl">${timelineRows}</div>
+        <button class="link home-tl-all" data-go="planning">Voir tous les événements à venir ›</button>
+      </section>
 
-      <div><div class="sec-head"><h2>À venir cette semaine</h2></div>
-      <section class="card upcoming">${up.length ? up.map(r => rowTx(r, 'expense', monthObj().expenses.indexOf(r))).join('') : '<div class="empty">Aucune dépense prévue cette semaine.</div>'}</section></div>
-
-      <div class="quick-row">
-        <button class="quick-chip" data-go="goals">🎯 Objectifs</button>
-        <button class="quick-chip" data-go="strategy">↗ Ma stratégie</button>
-        <button class="quick-chip" data-go="savings">🐷 Épargne</button>
+      <div class="home-smart3">
+        ${savingsCard}
+        ${goal ? `<button class="home-smart gl clickable-card" data-edit-goal="${goal.id}">
+          <span class="badge">🎯</span><div class="st" style="color:#2f6bd6">Objectif principal</div><div class="sb">${gp}%</div>
+          <div class="ss">${eur(goal.current)} / ${eur(goal.target)}</div><div class="mini" style="background:#dbe6f7"><span style="width:${gp}%;background:#3f7fe0"></span></div>
+        </button>` : `<button class="home-smart gl clickable-card" data-add-goal>
+          <span class="badge">🎯</span><div class="st" style="color:#2f6bd6">Objectif principal</div><div class="sb" style="font-size:14px">＋ Définir</div><div class="ss">Crée ton premier objectif</div>
+        </button>`}
+        <button class="home-smart bs clickable-card" data-go="strategy">
+          <span class="badge">📈</span><div class="st">Point de bascule</div><div class="sb">${bMonths != null ? monthsToText(bMonths) : '—'}</div>
+          <div class="ss">${bMonths != null ? monthsToDate(bMonths) : 'À paramétrer'}</div>
+          ${strat.engine && strat.engine.finalCapital ? `<div class="ss" style="margin-top:5px">Capital théorique</div><div class="ss" style="color:#12a45f;font-weight:800">${eur(strat.engine.finalCapital)}</div>` : ''}
+        </button>
       </div>
 
-      ${goal ? `<section class="hero savings-home-card clickable" data-go="goals">
-        <div class="savings-home-head"><div><div class="label">🎯 Objectif d’épargne</div><b class="savings-home-name">${esc(goal.n || 'Mon objectif')}</b></div><span class="edit-chip">Voir ›</span></div>
-        <strong style="font-size:18px">${eur(goal.current)} <small>/ ${eur(goal.target)}</small></strong>
-        <div class="progress"><span style="width:${gp}%"></span></div>
-        <div class="hero-sub"><span>${gp}% atteint</span><span>Toucher pour régler ›</span></div>
-      </section>` : `<section class="card savings-empty-home clickable" data-go="goals"><div><b>🎯 Objectif d’épargne</b><small>Crée un objectif pour suivre ton projet.</small></div><span>＋</span></section>`}
+      <section class="card">
+        <div class="sec-head"><h2>Ce mois en un coup d’œil</h2><button class="home-eye" data-home-glance>${glanceHidden ? '👁 Afficher' : '🙈 Masquer'}</button></div>
+        <div class="home-glance">
+          <button class="home-gl" data-home-explain="revenus"><div class="gi gi-down">↓</div><div class="gv">${gv(t.pin)}</div><div class="gl-lbl">Revenus reçus</div>${glanceHidden ? '' : delta(dRev, true)}</button>
+          <button class="home-gl" data-go="transactions"><div class="gi gi-up">↑</div><div class="gv">${gv(t.tex)}</div><div class="gl-lbl">Dépenses prévues</div>${glanceHidden ? '' : delta(dExp, false)}</button>
+          <button class="home-gl" data-home-topay><div class="gi gi-cal">▦</div><div class="gv">${gv(t.future)}</div><div class="gl-lbl">Reste à payer</div>${glanceHidden ? '' : delta(dFut, false)}</button>
+          <button class="home-gl" data-home-explain="projection"><div class="gi gi-wallet">▤</div><div class="gv">${gv(t.final)}</div><div class="gl-lbl">Projection</div>${glanceHidden ? '' : delta(dFin, true)}</button>
+        </div>
+      </section>
     </div>`;
   }
 
@@ -1462,7 +1636,12 @@
 
   document.addEventListener('click', e => {
     const tog = e.target.closest('[data-toggle]');
-    if (tog) { const arr = tog.dataset.toggle === 'income' ? monthObj().income : monthObj().expenses; const item = arr[+tog.dataset.index]; if (item && !isAutoIncome(item)) { item.paid = !item.paid; item.paidDate = item.paid ? today() : ''; saveBudget(); render(); } return; }
+    if (tog) { const arr = tog.dataset.toggle === 'income' ? monthObj().income : monthObj().expenses; const item = arr[+tog.dataset.index]; if (item && !isAutoIncome(item)) { item.paid = !item.paid; item.paidDate = item.paid ? today() : ''; saveBudget(); render(); toast(item.paid ? (tog.dataset.toggle === 'income' ? '✓ Marqué reçu' : '✓ Marqué payé') : 'Repassé en prévu'); } return; }
+
+    const hx = e.target.closest('[data-home-explain]'); if (hx) return homeExplain(hx.dataset.homeExplain);
+    if (e.target.closest('[data-home-topay]')) return homeTopay();
+    if (e.target.closest('[data-edit-period]')) { $('#periodBtn').click(); return; }
+    if (e.target.closest('[data-home-glance]')) { const h = localStorage.getItem('orion_ui_glanceHidden') === '1'; try { localStorage.setItem('orion_ui_glanceHidden', h ? '0' : '1'); } catch {} render(); return; }
 
     const g = e.target.closest('[data-go]'); if (g) { page = g.dataset.go; if (page !== 'strategy') stratPreviewRate = null; render(); return; }
     if (e.target.closest('[data-add-tx]')) return txForm();
