@@ -1,0 +1,134 @@
+/* ============================================================================
+   Budget Orion — Onglet Analyse (premium, clair, cohérence couleurs stricte).
+   Additif : ne modifie aucun CSS validé. Couleurs : vert=revenus, rouge=dépenses,
+   bleu=conservé, orange=attention, gris=référence.
+   ========================================================================= */
+.an-page { padding-bottom: calc(var(--nav) + env(safe-area-inset-bottom) + 16px); }
+.an-page * { min-width: 0; }
+:root { --an-green:#12a45f; --an-red:#ef4565; --an-blue:#2f6bd6; --an-orange:#f0932b; --an-gray:#9aa4a0; }
+
+/* Sous-titre discret */
+.an-sub { color: var(--mut); font-size: 12px; margin: -4px 2px 2px; }
+
+/* Sélecteur de période (scroll horizontal contenu, jamais le body) */
+.an-periods { display:flex; gap:7px; overflow-x:auto; padding:1px 0 3px; scrollbar-width:none; -webkit-overflow-scrolling:touch; }
+.an-periods::-webkit-scrollbar { display:none; }
+.an-per { flex:0 0 auto; background:#fff; border:1px solid var(--line); border-radius:999px; padding:8px 14px; font-size:12.5px; font-weight:800; color:#5f6862; }
+.an-per.active { background:#eafaf1; border-color:#bce6cf; color:var(--gd); }
+.an-yearnav { display:flex; align-items:center; justify-content:center; gap:12px; margin-top:6px; }
+.an-yearnav button { width:30px; height:30px; border-radius:9px; border:1px solid var(--line); background:#fff; color:var(--gd); font-size:15px; }
+.an-yearnav b { font-size:14px; }
+
+/* Carte "Ta situation" : 4 chiffres colorés */
+.an-situ-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.an-situ-head h2 { font-size:15px; margin:0; font-weight:850; }
+.an-situ-head .i { width:26px;height:26px;border-radius:50%;border:1px solid var(--line);background:#fff;color:var(--mut);display:grid;place-items:center;font-size:13px; }
+.an-kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:2px; }
+.an-kpi { padding:2px 6px; border-left:1px solid var(--line); }
+.an-kpi:first-child { border-left:0; }
+.an-kpi small { display:block; font-size:9.5px; color:var(--mut); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.an-kpi b { display:block; font-size:16px; font-weight:900; letter-spacing:-.5px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.an-kpi .d { font-size:9.5px; font-weight:800; margin-top:2px; white-space:nowrap; }
+.an-kpi.rev b { color:var(--an-green); } .an-kpi.dep b { color:var(--an-red); }
+.an-kpi.cons b { color:var(--an-blue); } .an-kpi.rate b { color:var(--ink); }
+.pos { color:var(--an-green); } .neg { color:var(--an-red); } .muted { color:var(--an-gray); }
+
+/* Bandeau "sur 100 € reçus" */
+.an-100 { margin-top:12px; }
+.an-100-bar { height:14px; border-radius:99px; overflow:hidden; display:flex; background:#eef2f0; }
+.an-100-bar i { display:block; height:100%; }
+.an-100-bar .dep { background:var(--an-red); } .an-100-bar .sav { background:var(--an-blue); } .an-100-bar .dispo { background:#cfe9db; }
+.an-100-leg { display:flex; justify-content:space-between; gap:8px; margin-top:7px; font-size:10.5px; color:var(--mut); }
+.an-100-leg b { display:block; font-size:12px; color:var(--ink); }
+.an-100-leg i { width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px;vertical-align:middle; }
+
+/* Graphique SVG */
+.an-chart-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
+.an-chart-head h2 { font-size:15px; margin:0; font-weight:850; }
+.an-legend { display:flex; gap:12px; margin:2px 0 6px; }
+.an-legend button { display:flex; align-items:center; gap:5px; font-size:11px; font-weight:750; color:#5f6862; }
+.an-legend i { width:9px; height:9px; border-radius:50%; display:inline-block; }
+.an-legend button.off { opacity:.34; text-decoration:line-through; }
+.an-svg-wrap { position:relative; width:100%; overflow:hidden; }
+.an-svg { width:100%; height:auto; display:block; touch-action:pan-y; }
+.an-grid { stroke:#eef3ef; stroke-width:1; }
+.an-axis { fill:var(--mut); font-size:8px; }
+.an-line-income { fill:none; stroke:var(--an-green); stroke-width:2.2; }
+.an-line-expense { fill:none; stroke:var(--an-red); stroke-width:2.2; }
+.an-line-saved { fill:none; stroke:var(--an-blue); stroke-width:2.2; }
+.an-area { opacity:.10; }
+.an-dot { stroke:#fff; stroke-width:1.4; }
+.an-hit { fill:transparent; cursor:pointer; }
+.an-tip { position:absolute; transform:translateX(-50%); background:#17251e; color:#fff; border-radius:11px; padding:8px 10px; font-size:10.5px; line-height:1.55; white-space:nowrap; box-shadow:0 8px 20px rgba(0,0,0,.18); pointer-events:none; z-index:5; }
+.an-tip i { width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:4px; }
+.an-tip b { color:#fff; }
+
+/* Où part ton argent — barres horizontales */
+.an-cat { display:flex; align-items:center; gap:10px; padding:9px 2px; border-top:1px solid var(--line); }
+.an-cat:first-child { border-top:0; }
+.an-cat .dotc { width:10px;height:10px;border-radius:50%;flex:0 0 10px; }
+.an-cat .cn { flex:1; min-width:0; }
+.an-cat .cn b { font-size:13px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.an-cat .track { height:6px; border-radius:99px; background:#eef2f0; overflow:hidden; margin-top:5px; }
+.an-cat .track span { display:block; height:100%; border-radius:99px; }
+.an-cat .cv { flex:0 0 auto; text-align:right; }
+.an-cat .cv b { font-size:13px; font-weight:850; } .an-cat .cv small { display:block; font-size:10px; color:var(--mut); }
+.an-cat .chev { color:#c2ccc6; font-size:15px; flex:0 0 auto; }
+
+/* Comparaison période précédente */
+.an-cmp { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+.an-cmp .c { text-align:center; }
+.an-cmp .c small { font-size:9.5px; color:var(--mut); display:block; }
+.an-cmp .c b { font-size:14px; font-weight:900; display:block; margin-top:3px; }
+.an-cmp .c .lab { font-size:9px; color:var(--an-gray); }
+
+/* Cartes marquantes (meilleur / plus coûteux / meilleur taux) */
+.an-marks { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.an-mark { border:1px solid var(--line); border-radius:14px; padding:11px 9px; text-align:center; }
+.an-mark small { font-size:9.5px; color:var(--mut); display:block; }
+.an-mark b { font-size:13px; display:block; margin-top:4px; }
+.an-mark .v { font-size:10.5px; color:var(--mut); margin-top:2px; }
+.an-mark.good { background:#f1faf5; border-color:#cdeadb; } .an-mark.good b { color:var(--an-green); }
+.an-mark.bad { background:#fdf0f2; border-color:#f6d3da; } .an-mark.bad b { color:var(--an-red); }
+.an-mark.blue { background:#eef4ff; border-color:#d3e0f7; } .an-mark.blue b { color:var(--an-blue); }
+
+/* Insights / Ce qui a changé */
+.an-ins { display:flex; align-items:flex-start; gap:10px; padding:11px 2px; border-top:1px solid var(--line); }
+.an-ins:first-child { border-top:0; }
+.an-ins .ic { flex:0 0 32px; width:32px; height:32px; border-radius:10px; display:grid; place-items:center; font-size:15px; background:#f1f6f3; }
+.an-ins.up .ic { background:#fdf0f2; } .an-ins.down .ic { background:#f1faf5; } .an-ins.info .ic { background:#eef4ff; }
+.an-ins .tx { flex:1; min-width:0; font-size:12.5px; line-height:1.4; }
+.an-ins .chev { color:#c2ccc6; font-size:15px; align-self:center; }
+
+/* Projection */
+.an-proj b.big { font-size:24px; font-weight:950; color:var(--an-blue); letter-spacing:-.5px; }
+.an-proj .track { height:9px; border-radius:99px; background:#e7f0eb; overflow:hidden; margin:9px 0 5px; }
+.an-proj .track span { display:block; height:100%; background:linear-gradient(90deg,#6dd5a1,#20ad6f); border-radius:99px; }
+.an-proj .warn { background:var(--ol); border:1px solid #ffe4bd; color:#8a5a00; border-radius:12px; padding:11px; font-size:12px; }
+
+/* Moyennes */
+.an-avgs { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.an-avg { border:1px solid var(--line); border-radius:14px; padding:11px; }
+.an-avg small { font-size:9.5px; color:var(--mut); display:block; }
+.an-avg b { font-size:15px; font-weight:900; display:block; margin-top:4px; }
+.an-avg.rev b { color:var(--an-green); } .an-avg.dep b { color:var(--an-red); } .an-avg.cons b { color:var(--an-blue); }
+
+/* Sheet catégorie / mois */
+.an-sheet-tot { background:#f8faf9; border:1px solid var(--line); border-radius:13px; padding:12px; margin-top:6px; }
+.an-sheet-tot b { font-size:20px; }
+.an-sheet-sub { display:flex; gap:14px; font-size:11px; color:var(--mut); margin-top:6px; }
+
+@media(max-width:380px){
+  .an-kpi b { font-size:14px; }
+  .an-marks { grid-template-columns:1fr; }
+  .an-cmp .c b { font-size:13px; }
+}
+
+/* Fidélité maquette : répartition en carte donut compacte */
+.an-where .sec-head small{display:block;color:var(--mut);font-size:10px;margin-top:3px}
+.an-donut-layout{display:grid;grid-template-columns:132px minmax(0,1fr);gap:14px;align-items:center;padding:5px 0 2px}
+.an-donut{width:124px;height:124px;border-radius:50%;position:relative;margin:auto;box-shadow:inset 0 0 0 1px rgba(0,0,0,.02)}
+.an-donut-hole{position:absolute;inset:28px;background:var(--card);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;box-shadow:0 0 0 1px var(--line)}
+.an-donut-hole b{font-size:13px;letter-spacing:-.2px}.an-donut-hole small{font-size:9px;color:var(--mut)}
+.an-donut-legend{display:grid;gap:6px}.an-donut-legend button{display:grid;grid-template-columns:9px minmax(0,1fr) auto;align-items:center;gap:7px;text-align:left;padding:2px 0;font-size:10.5px}.an-donut-legend i{width:8px;height:8px;border-radius:50%}.an-donut-legend span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.an-donut-legend b{font-size:10px}
+@media(max-width:360px){.an-donut-layout{grid-template-columns:110px minmax(0,1fr);gap:9px}.an-donut{width:104px;height:104px}.an-donut-hole{inset:24px}.an-donut-hole b{font-size:11px}}

@@ -1,0 +1,165 @@
+/* ============================================================================
+   Budget Orion — Onglet Planification + CORRECTIFS GLOBAUX (zoom, header).
+   Additif : ne modifie ni app.css, ni orion-home.css, ni orion-expenses.css.
+   ========================================================================= */
+
+/* --- CORRECTIF GLOBAL 1 : zoom / débordement horizontal (bug ouverture) ---
+   On empêche tout dépassement latéral qui forçait Safari à dézoomer.
+   NB : on n'applique PAS overflow-x sur .app (cela casserait le sticky du header). */
+html, body { max-width: 100%; overflow-x: hidden; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+img, svg, canvas, video { max-width: 100%; height: auto; }
+
+/* --- CORRECTIF GLOBAL 2 : header stable au scroll ---
+   Le header est déjà sticky (app.css). On garantit qu'aucun contenu ne le
+   traverse : repli opaque si le flou n'est pas supporté, et pile z-index sûre. */
+@supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+  .top { background: #f4f8f5 !important; }
+}
+.top { -webkit-backdrop-filter: blur(16px); }
+
+/* ===================== PLANIFICATION ===================== */
+.pl-page { padding-bottom: calc(var(--nav) + env(safe-area-inset-bottom) + 16px); }
+
+/* Barre d'outils */
+.pl-toolbar { display:flex; gap:8px; align-items:center; }
+.pl-search { flex:1; display:flex; align-items:center; gap:8px; background:#fff; border:1px solid var(--line); border-radius:13px; padding:9px 12px; box-shadow:var(--shadow); color:var(--mut); font-size:12.5px; }
+.pl-add { display:flex; align-items:center; gap:7px; background:linear-gradient(#11a85c,#078446); color:#fff; border-radius:13px; padding:10px 15px; font-weight:850; font-size:13px; box-shadow:0 6px 16px rgba(7,132,70,.24); }
+.pl-add span { font-size:19px; line-height:1; }
+.pl-add:active { transform:scale(.96); }
+
+/* Résumé 4 métriques */
+.pl-sum { display:grid; grid-template-columns:repeat(4,1fr); gap:2px; }
+.pl-sum .m { text-align:left; padding:2px 6px; min-width:0; border-left:1px solid var(--line); }
+.pl-sum .m:first-child { border-left:0; }
+.pl-sum .m small { display:block; font-size:9.5px; color:var(--mut); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pl-sum .m b { display:block; font-size:15px; font-weight:900; letter-spacing:-.4px; margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pl-sum .m .u { font-size:9px; color:var(--mut); font-weight:600; }
+.pl-sum .m.rev b { color:#12a45f; } .pl-sum .m.dep b { color:#ef4565; }
+.pl-sum .m.ech b { color:#2f6bd6; } .pl-sum .m.epg b { color:#7b5bd6; }
+
+/* Segmenté Jour / Semaine / Mois */
+.pl-seg { display:flex; background:#f0f3f1; border-radius:13px; padding:3px; gap:3px; }
+.pl-seg button { flex:1; padding:9px 5px; border-radius:10px; font-size:12.5px; font-weight:800; color:#5f6862; }
+.pl-seg button.active { background:#fff; color:var(--gd); box-shadow:0 2px 7px rgba(0,0,0,.07); }
+
+/* Chips filtres */
+.pl-chips { display:flex; gap:7px; overflow:auto; padding:1px 0 2px; scrollbar-width:none; }
+.pl-chips::-webkit-scrollbar { display:none; }
+.pl-chip { flex:0 0 auto; background:#fff; border:1px solid var(--line); border-radius:999px; padding:6px 12px; font-size:11.5px; font-weight:750; color:#5f6862; display:flex; align-items:center; gap:5px; }
+.pl-chip .ic { width:8px; height:8px; border-radius:50%; }
+.pl-chip.active { background:#eafaf1; border-color:#bfe6cf; color:var(--gd); }
+
+/* Bande 7 jours (Jour/Semaine) */
+.pl-strip-wrap { display:flex; align-items:center; gap:4px; }
+.pl-nav { flex:0 0 auto; width:30px; height:30px; border-radius:10px; border:1px solid var(--line); background:#fff; color:var(--mut); font-size:16px; display:grid; place-items:center; }
+.pl-strip { flex:1; display:grid; grid-template-columns:repeat(7,1fr); gap:3px; }
+.pl-day { display:flex; flex-direction:column; align-items:center; gap:4px; padding:7px 2px 6px; border-radius:13px; border:1.5px solid transparent; min-width:0; }
+.pl-day .wd { font-size:9px; font-weight:800; color:var(--mut); text-transform:uppercase; }
+.pl-day .dn { font-size:16px; font-weight:850; }
+.pl-day.out .dn, .pl-day.out .wd { color:#c2cbc5; }
+.pl-day.sel { border-color:#12a45f; background:#f2fbf6; }
+.pl-day.today .dn { color:var(--gd); }
+.pl-daydots { height:6px; display:flex; gap:3px; align-items:center; }
+.pl-daydots i { width:5px; height:5px; border-radius:50%; }
+
+/* Points couleur (partagés) */
+.d-green,.i-green{background:#12a45f}.d-red,.i-red{background:#ef4565}.d-blue,.i-blue{background:#2f6bd6}
+.d-pink,.i-pink{background:#e84393}.d-violet,.i-violet{background:#7b5bd6}.d-orange,.i-orange{background:#f0932b}
+
+/* Timeline d'événements (jour) */
+.pl-tl-head { display:flex; align-items:center; justify-content:space-between; margin:2px 2px 6px; }
+.pl-tl-head h2 { font-size:15px; margin:0; font-weight:850; color:var(--gd); text-transform:capitalize; }
+.pl-today-btn { border:1px solid var(--line); background:#fff; border-radius:10px; padding:6px 10px; font-size:11px; font-weight:800; color:var(--gd); display:flex; align-items:center; gap:5px; }
+.pl-row { display:flex; align-items:center; gap:10px; padding:11px 2px; border-top:1px solid var(--line); }
+.pl-row:first-child { border-top:0; }
+.pl-railcol { position:relative; width:16px; flex:0 0 16px; align-self:stretch; display:flex; align-items:center; justify-content:center; }
+.pl-railcol:before { content:""; position:absolute; top:0; bottom:0; left:50%; transform:translateX(-50%); width:2px; background:var(--line); }
+.pl-row:first-child .pl-railcol:before { top:50%; }
+.pl-row:last-child .pl-railcol:before { bottom:50%; }
+.pl-dot { width:13px; height:13px; border-radius:50%; border:3px solid #12a45f; background:var(--card); z-index:1; }
+.pl-dot.dot-green{border-color:#12a45f}.pl-dot.dot-red{border-color:#ef4565}.pl-dot.dot-blue{border-color:#2f6bd6}.pl-dot.dot-pink{border-color:#e84393}.pl-dot.dot-violet{border-color:#7b5bd6}
+.pl-logo { width:44px; height:44px; flex:0 0 44px; border-radius:12px; font-size:18px; border:1px solid #e1eee7; }
+.pl-main { flex:1; min-width:0; }
+.pl-main b { display:block; font-size:14px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pl-main small { display:block; font-size:11px; color:var(--mut); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pl-badge { display:inline-block; margin-top:4px; font-size:10px; font-weight:800; border-radius:999px; padding:2px 8px; }
+.b-green{background:#e9f7ef;color:#12844b}.b-red{background:#fdecec;color:#d02f45}.b-blue{background:#eaf1ff;color:#2f6bd6}
+.b-orange{background:#fff3e0;color:#b76a00}.b-pink{background:#fdeaf3;color:#c02a74}.b-violet{background:#efeaff;color:#5b40b0}
+.pl-amt { text-align:right; flex:0 0 auto; font-size:14px; font-weight:900; white-space:nowrap; }
+.pl-row.paid { opacity:.62; }
+.pl-row.paid .pl-main b { text-decoration:line-through; text-decoration-thickness:1px; }
+.pl-chev { color:#c2ccc6; font-size:16px; flex:0 0 auto; }
+.pl-voir { display:block; text-align:center; width:100%; margin-top:8px; }
+
+/* Résumé semaine */
+.pl-weeksum { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+.pl-weeksum .w { background:#f8faf9; border:1px solid var(--line); border-radius:12px; padding:9px; text-align:center; }
+.pl-weeksum .w small { font-size:9.5px; color:var(--mut); display:block; }
+.pl-weeksum .w b { font-size:14px; font-weight:900; }
+.pl-weeksum .w.in b { color:#12a45f; } .pl-weeksum .w.out b { color:#ef4565; } .pl-weeksum .w.net b { color:var(--gd); }
+
+/* Groupe jour (vue semaine) */
+.pl-wday { border-top:1px solid var(--line); padding-top:8px; margin-top:8px; }
+.pl-wday:first-child { border-top:0; margin-top:0; padding-top:0; }
+.pl-wday-h { font-size:11px; font-weight:850; color:var(--mut); text-transform:capitalize; margin-bottom:2px; }
+
+/* Mois : calendrier (réutilise .calendar/.day mais dots ronds nets) */
+.pl-cal .cal-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.pl-cal .cal-head b { font-size:15px; }
+.pl-cal .cal-head button { width:32px; height:32px; border-radius:10px; border:1px solid var(--line); background:#fff; font-size:16px; color:var(--gd); }
+.pl-grid { display:grid; grid-template-columns:repeat(7,1fr); text-align:center; }
+.pl-grid .wk { font-size:10px; color:var(--mut); font-weight:700; padding-bottom:4px; }
+.pl-cell { height:46px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; font-size:12.5px; border-radius:11px; }
+.pl-cell.clickable:active { background:#eff9f3; }
+.pl-cell.today .dn { width:27px; height:27px; background:var(--g); color:#fff; border-radius:50%; display:grid; place-items:center; font-weight:800; }
+.pl-cell.other .dn { color:#c9d1cb; }
+.pl-cd { height:5px; display:flex; gap:2px; }
+.pl-cd i { width:5px; height:5px; border-radius:50%; }
+
+/* Légende */
+.pl-legend { display:flex; flex-wrap:wrap; gap:10px 12px; font-size:10px; color:var(--mut); margin-top:10px; }
+.pl-legend span { display:flex; align-items:center; gap:4px; }
+.pl-legend i { width:8px; height:8px; border-radius:50%; }
+
+/* Cartes "à venir" horizontales */
+.pl-up { display:flex; gap:9px; overflow:auto; padding:1px 0 3px; scrollbar-width:none; }
+.pl-up::-webkit-scrollbar { display:none; }
+.pl-upcard { flex:0 0 auto; width:118px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:var(--shadow); padding:11px; }
+.pl-upcard .brandmark { width:38px; height:38px; }
+.pl-upcard b { display:block; font-size:12.5px; margin-top:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pl-upcard small { display:block; font-size:10px; color:#b76a00; font-weight:750; margin-top:2px; }
+.pl-upcard .a { display:block; font-size:13px; font-weight:900; color:#ef4565; margin-top:4px; }
+
+/* Échéanciers en cours */
+.pl-inst { display:flex; gap:9px; overflow:auto; padding:1px 0 3px; scrollbar-width:none; }
+.pl-inst::-webkit-scrollbar { display:none; }
+.pl-instcard { flex:0 0 auto; width:160px; border:1px solid var(--line); border-radius:14px; background:#fff; box-shadow:var(--shadow); padding:12px; }
+.pl-instcard .top { position:static; display:flex; align-items:center; gap:9px; padding:0; background:none; }
+.pl-instcard .brandmark { width:34px; height:34px; }
+.pl-instcard .nm { font-size:12.5px; font-weight:850; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pl-instcard .mo { font-size:11px; color:var(--mut); }
+.pl-instbar { height:6px; border-radius:99px; background:#eaf0ff; overflow:hidden; margin:10px 0 5px; }
+.pl-instbar span { display:block; height:100%; background:#2f6bd6; border-radius:99px; }
+.pl-instfoot { display:flex; justify-content:space-between; font-size:10.5px; color:var(--mut); }
+.pl-instnext { font-size:10px; color:var(--mut); margin-top:6px; }
+
+/* Insights contextuels */
+.pl-ins { display:flex; gap:9px; align-items:flex-start; padding:10px 0; border-top:1px solid var(--line); font-size:12.5px; line-height:1.35; }
+.pl-ins:first-child { border-top:0; }
+.pl-ins .ic { flex:0 0 auto; font-size:15px; }
+
+/* Prévisions (horizon) */
+.pl-range { display:flex; background:#f0f3f1; border-radius:12px; padding:3px; gap:3px; }
+.pl-range button { flex:1; padding:8px 4px; border-radius:9px; font-size:11px; font-weight:800; color:#5f6862; }
+.pl-range button.active { background:#fff; color:var(--gd); box-shadow:0 2px 6px rgba(0,0,0,.06); }
+
+/* Sheet détail jour : groupes */
+.pl-sheet-tot { display:flex; justify-content:space-between; align-items:center; background:#f8faf9; border:1px solid var(--line); border-radius:13px; padding:11px 13px; margin-top:10px; }
+.pl-sheet-tot .out { color:#ef4565; font-weight:900; } .pl-sheet-tot .in { color:#12a45f; font-weight:900; }
+
+@media(max-width:380px){
+  .pl-sum .m b { font-size:13px; }
+  .pl-logo { width:40px; height:40px; flex:0 0 40px; font-size:16px; }
+  .pl-add b { display:none; } .pl-add { padding:10px 13px; }
+  .pl-day .dn { font-size:15px; }
+}

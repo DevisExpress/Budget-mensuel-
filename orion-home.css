@@ -1,0 +1,149 @@
+/* ============================================================================
+   Budget Orion — Accueil (tableau de bord). Styles ADDITIFS uniquement.
+   Réutilise les tokens de app.css (--g,--gd,--ink,--mut,--line,--card,--shadow…).
+   Ne modifie ni app.css ni les autres écrans.
+   ========================================================================= */
+
+/* Carte financière principale */
+.home-main{background:linear-gradient(150deg,#22b974,#0e8a4c);color:#fff;border-radius:20px;
+  padding:16px 15px 15px;box-shadow:0 14px 30px rgba(16,138,77,.24)}
+.home-cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px}
+.home-col{color:#fff;text-align:left;min-width:0;padding:0}
+.home-col.center{padding:0 8px;border-left:1px solid rgba(255,255,255,.16);border-right:1px solid rgba(255,255,255,.16)}
+.home-col .lbl{font-size:10px;opacity:.92;display:flex;align-items:center;gap:4px;line-height:1.2;text-transform:uppercase;letter-spacing:.2px}
+.home-col .val{font-size:clamp(14px,4.4vw,20px);font-weight:900;letter-spacing:-.6px;margin:6px 0 4px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.home-col .sub{font-size:9.5px;opacity:.85;line-height:1.25}
+.home-col:active{opacity:.9}
+.home-i{font-size:9px;border:1px solid rgba(255,255,255,.55);border-radius:50%;width:13px;height:13px;
+  display:inline-grid;place-items:center;flex:0 0 auto;font-style:normal;font-weight:800}
+
+.home-barwrap{position:relative;margin:20px 0 9px}
+.home-bar{height:8px;border-radius:99px;background:rgba(255,255,255,.25);overflow:hidden;display:flex}
+.home-bar .paid{background:#fff;height:100%;transition:width .25s ease}
+.home-bar .rest{height:100%;background:repeating-linear-gradient(90deg,rgba(255,255,255,.55) 0 5px,transparent 5px 11px)}
+.home-bubble{position:absolute;top:-11px;transform:translateX(-50%);background:#fff;color:var(--gd);font-size:10px;
+  font-weight:900;padding:2px 8px;border-radius:999px;box-shadow:0 3px 8px rgba(0,0,0,.14);white-space:nowrap}
+.home-barrow{display:flex;justify-content:space-between;font-size:11px;opacity:.96;gap:8px}
+.home-barrow span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.home-barrow .d1:before{content:"●";margin-right:5px;font-size:9px;vertical-align:middle;color:#bff3d8}
+.home-barrow .d2:before{content:"●";margin-right:5px;font-size:9px;vertical-align:middle;color:rgba(255,255,255,.6)}
+
+.home-split{display:flex;margin-top:14px;background:rgba(255,255,255,.10);border-radius:14px;padding:11px 6px;gap:6px}
+.home-split>button{flex:1;display:flex;align-items:center;gap:10px;color:#fff;text-align:left;min-width:0;transition:transform .15s;padding:0 4px}
+.home-split>button:active{transform:scale(.97)}
+.home-split .ic{width:38px;height:38px;border-radius:12px;background:rgba(255,255,255,.16);display:grid;place-items:center;font-size:17px;flex:0 0 38px}
+.home-split .s-lbl{font-size:10.5px;opacity:.9;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.home-split .s-val{font-size:15px;font-weight:900;margin-top:2px;white-space:nowrap}
+.home-split .chev{margin-left:auto;opacity:.75;font-size:17px;flex:0 0 auto}
+.home-split .sep{width:1px;background:rgba(255,255,255,.22);flex:0 0 1px}
+
+/* Actions rapides (6) */
+.home-quick{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--card);border:1px solid var(--line);
+  border-radius:17px;box-shadow:var(--shadow);padding:13px 3px}
+.home-quick button{display:flex;flex-direction:column;align-items:center;gap:6px;color:var(--ink);font-size:9.5px;
+  font-weight:700;line-height:1.12;text-align:center;padding:3px 1px;transition:transform .14s ease;min-height:62px;justify-content:flex-start}
+.home-quick button:active{transform:scale(.9)}
+.home-quick .qi{width:42px;height:42px;border-radius:50%;border:1.6px solid #d7e7de;color:var(--gd);
+  display:grid;place-items:center;font-size:18px;background:#fff}
+.home-quick button[data-add-tx] .qi{background:#eef9f2;border-color:#cfeadd}
+
+/* Insights cliquables */
+.home-ins .insight-row{display:flex;gap:9px;align-items:center;padding:10px 0;border-top:1px solid var(--line);font-size:12.5px;line-height:1.35}
+.home-ins .insight-row:first-child{border-top:0}
+.home-ins .insight-ic{flex:0 0 auto;font-size:15px}
+.home-ins .insight-row span:nth-child(2){flex:1;min-width:0}
+.home-ins .lvl-critical{color:#c62f45}.home-ins .lvl-action{color:#b76a00}
+.home-ins .lvl-good{color:#0f8a4c}.home-ins .lvl-info{color:var(--ink)}
+
+/* Timeline À venir */
+.home-tl .tl-row{display:flex;align-items:center;gap:11px;padding:12px 0;border-top:1px solid var(--line);position:relative}
+.home-tl .tl-row:first-child{border-top:0}
+.home-tl-dotcol{position:relative;width:14px;flex:0 0 14px;align-self:stretch;display:flex;align-items:center;justify-content:center}
+.home-tl-dotcol:before{content:"";position:absolute;top:0;bottom:0;width:2px;background:var(--line)}
+.tl-row:first-child .home-tl-dotcol:before{top:50%}
+.tl-row:last-child .home-tl-dotcol:before{bottom:50%}
+.home-tl-dot{width:12px;height:12px;border-radius:50%;border:3px solid #12a45f;background:var(--card);z-index:1}
+.dot-green{border-color:#12a45f}.dot-orange{border-color:#f0932b}.dot-red{border-color:#ef4565}.dot-pink{border-color:#e84393}
+.tl-logo{width:44px;height:44px;flex:0 0 44px;border-radius:12px;font-size:18px}
+.tl-main{flex:1;min-width:0}
+.tl-when{font-size:11px;font-weight:800;margin-bottom:1px}
+.when-green{color:#12a45f}.when-orange{color:#f0932b}.when-red{color:#ef4565}.when-pink{color:#e84393}
+.tl-main b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl-main small{font-size:11px;color:var(--mut)}
+.tl-amt{font-weight:900;font-size:14px;white-space:nowrap}
+.tl-chev{color:#c2ccc6;margin-left:3px;font-size:16px;flex:0 0 auto}
+.home-tl-all{display:block;text-align:center;width:100%;margin-top:8px}
+
+/* Cartes intelligentes (trio) */
+.home-smart3{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;align-items:stretch}
+.home-smart{border:1px solid var(--line);border-radius:15px;padding:12px 11px;background:#fff;box-shadow:var(--shadow);
+  position:relative;min-width:0;text-align:left;color:var(--ink);display:flex;flex-direction:column}
+.home-smart.gl{background:#f4f8ff;border-color:#dbe8ff}
+.home-smart.bs{background:#fff9ef;border-color:#f1e3c4}
+.home-smart.sv-topay{background:#fff6ea;border-color:#f3e2c2}
+.home-smart .st{font-size:11px;color:var(--mut);font-weight:750;line-height:1.2}
+.home-smart .sb{font-size:18px;font-weight:900;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:-.5px}
+.home-smart .ss{font-size:10px;color:var(--mut);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.home-smart .badge{position:absolute;top:9px;right:10px;font-size:15px}
+.home-smart .mini{height:6px;border-radius:99px;background:#e7efe9;overflow:hidden;margin-top:9px}
+.home-smart .mini span{display:block;height:100%;background:var(--g);border-radius:99px}
+.home-spark{width:100%;height:26px;margin-top:8px;display:block}
+
+/* Ce mois en un coup d'œil */
+.home-glance{display:grid;grid-template-columns:repeat(4,1fr);gap:4px}
+.home-gl{text-align:center;min-width:0;color:var(--ink);padding:2px}
+.home-gl .gi{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;margin:0 auto 7px;font-size:18px;font-weight:800}
+.gi-down{background:#e9f7ef;color:#12a45f}.gi-up{background:#fdecec;color:#ef4565}
+.gi-cal{background:#fff3e0;color:#f0932b}.gi-wallet{background:#e9f7ef;color:#12a45f}
+.home-gl .gv{font-size:14px;font-weight:900;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.home-gl .gl-lbl{font-size:10px;color:var(--mut);margin-top:2px;line-height:1.15}
+.home-gl .gvs{font-size:9px;font-weight:800;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.up-good{color:#12a45f}.up-bad{color:#ef4565}
+.home-eye{background:none;color:var(--mut);font-size:12px;font-weight:700}
+
+/* Toast */
+.home-toast{position:fixed;left:50%;bottom:calc(var(--nav) + env(safe-area-inset-bottom) + 16px);
+  transform:translate(-50%,16px);background:#142018;color:#fff;padding:11px 18px;border-radius:999px;
+  font-size:13px;font-weight:800;z-index:80;opacity:0;pointer-events:none;transition:.22s;max-width:90vw;
+  white-space:nowrap;box-shadow:0 8px 24px rgba(0,0,0,.22)}
+.home-toast.show{opacity:1;transform:translate(-50%,0)}
+
+@media(max-width:360px){
+  .home-quick button{font-size:9px}
+  .home-quick .qi{width:38px;height:38px;font-size:16px}
+  .home-smart .sb{font-size:16px}
+  .home-split .s-val{font-size:14px}
+}
+
+/* Consolidation responsive : Accueil doit tenir dans la largeur réelle, sans masquer un débordement. */
+#view,.stack,.home-main,.home-quick,.home-smart3,.home-glance{width:100%;max-width:100%;min-width:0}
+.home-main,.home-main *{box-sizing:border-box}
+.home-cols{grid-template-columns:repeat(3,minmax(0,1fr))}
+.home-quick{grid-template-columns:repeat(6,minmax(0,1fr))}
+.home-smart3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.home-glance{grid-template-columns:repeat(4,minmax(0,1fr))}
+.home-split>button>div:nth-child(2){min-width:0;overflow:hidden}
+.home-split .s-val{overflow:hidden;text-overflow:ellipsis}
+@media(max-width:390px){
+  .home-main{padding-left:12px;padding-right:12px}
+  .home-col.center{padding-left:5px;padding-right:5px}
+  .home-col .lbl{font-size:9px}
+  .home-col .sub{font-size:8.5px}
+  .home-barrow{font-size:9.5px}
+  .home-split{gap:3px;padding-left:4px;padding-right:4px}
+  .home-split>button{gap:6px;padding:0 2px}
+  .home-split .ic{width:32px;height:32px;flex-basis:32px}
+  .home-split .chev{display:none}
+}
+
+/* Fidélité maquette + correction définitive du décalage Accueil */
+body:has(.home-main){overflow-x:clip}
+#app:has(.home-main){width:min(100%,480px);max-width:480px;margin-inline:auto;overflow-x:clip}
+#view:has(.home-main){width:100%;max-width:100%;padding-left:14px;padding-right:14px;overflow-x:clip}
+#view:has(.home-main)>.stack{width:100%;max-width:100%;margin:0 auto}
+.home-main{background:linear-gradient(145deg,#10ad61,#078a49);padding:18px 16px 16px;border-radius:20px}
+.home-col .val{font-size:clamp(15px,4.8vw,22px)}
+.home-tl{border:1px solid var(--line);border-radius:14px;padding:0 10px;background:#fff}
+.home-smart3{gap:8px}.home-smart{min-height:118px}
+@media(max-width:390px){#view:has(.home-main){padding-left:12px;padding-right:12px}.home-main{padding-left:13px;padding-right:13px}.home-quick{padding-left:1px;padding-right:1px}.home-quick button{font-size:8.5px}.home-quick .qi{width:36px;height:36px}.home-smart{padding:10px 8px}.home-smart .st{font-size:9.5px}.home-smart .sb{font-size:15px}.home-gl .gv{font-size:12px}}

@@ -1,0 +1,119 @@
+/* ============================================================================
+   Budget Orion — Onglet Objectifs. Fidélité stricte à Objectif.png.
+   Additif : ne modifie aucun CSS validé. Responsive : rien ne dépasse à droite.
+   ========================================================================= */
+.gl-page { padding-bottom: calc(var(--nav) + env(safe-area-inset-bottom) + 16px); }
+.gl-page * { min-width: 0; box-sizing: border-box; }
+:root { --gl-p1:#7b5bd6; --gl-p2:#2f6bd6; --gl-p3:#f0932b; --gl-p4:#12a45f; --gl-p5:#e84393; --gl-p6:#16a1a1; }
+
+.gl-sub { color: var(--mut); font-size: 12px; margin: -4px 2px 4px; }
+
+/* Vue d'ensemble : 3 métriques */
+.gl-ovh { font-size:13px; font-weight:850; margin:2px 2px 8px; }
+.gl-ov { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; }
+.gl-ovc { border:1px solid var(--line); border-radius:15px; padding:12px 11px; background:var(--card); box-shadow:var(--shadow); }
+.gl-ovc small { font-size:10px; color:var(--mut); display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gl-ovc b { display:block; font-size:18px; font-weight:900; letter-spacing:-.5px; margin:4px 0 2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gl-ovc .u { font-size:10px; color:var(--mut); }
+.gl-ovc.tot b { color:var(--ink); } .gl-ovc.done b { color:var(--gl-p4); } .gl-ovc.run b { color:var(--gl-p2); }
+
+/* Onglets Liste / Tableau */
+.gl-tabs { display:flex; gap:7px; }
+.gl-tab { flex:0 0 auto; background:#fff; border:1px solid var(--line); border-radius:999px; padding:7px 15px; font-size:12.5px; font-weight:800; color:#5f6862; }
+.gl-tab.active { background:#eafaf1; border-color:#bce6cf; color:var(--gd); }
+.gl-sort { margin-left:auto; }
+
+/* Carte objectif (fidèle maquette) */
+.gl-card { display:flex; align-items:flex-start; gap:12px; padding:13px; border:1px solid var(--line); border-radius:16px; background:var(--card); box-shadow:var(--shadow); margin-bottom:10px; }
+.gl-card:active { transform:scale(.992); }
+.gl-emo { width:42px; height:42px; flex:0 0 42px; border-radius:13px; display:grid; place-items:center; font-size:20px; }
+.gl-body { flex:1; min-width:0; }
+.gl-row1 { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+.gl-name { font-size:14px; font-weight:850; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gl-pct { flex:0 0 auto; font-size:14px; font-weight:900; }
+.gl-amt { font-size:12.5px; color:var(--mut); margin-top:2px; }
+.gl-amt b { color:var(--ink); font-weight:800; }
+.gl-bar { height:7px; border-radius:99px; background:#eef2f0; overflow:hidden; margin:9px 0 7px; }
+.gl-bar span { display:block; height:100%; border-radius:99px; }
+.gl-row3 { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size:11px; color:var(--mut); }
+.gl-row3 .contrib { font-weight:750; }
+.gl-done { color:var(--gl-p4); font-weight:800; font-size:12px; }
+.gl-star { color:#d9a400; font-size:13px; }
+
+/* Tableau (vue synthèse) */
+.gl-tbl { }
+.gl-trow { display:flex; align-items:center; gap:9px; padding:11px 2px; border-top:1px solid var(--line); }
+.gl-trow:first-child { border-top:0; }
+.gl-trow .te { width:30px; flex:0 0 30px; font-size:16px; text-align:center; }
+.gl-trow .tn { flex:1.4; min-width:0; font-size:12.5px; font-weight:750; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.gl-trow .tc { flex:1; text-align:right; font-size:11.5px; }
+.gl-trow .tc small { display:block; font-size:9px; color:var(--mut); }
+.gl-trow .tp { flex:0 0 44px; text-align:right; font-weight:850; font-size:12px; }
+
+/* Résumé global + donut catégories */
+.gl-glob { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; }
+.gl-globc { border:1px solid var(--line); border-radius:14px; padding:11px; }
+.gl-globc small { font-size:9.5px; color:var(--mut); display:block; }
+.gl-globc b { font-size:15px; font-weight:900; display:block; margin-top:3px; }
+.gl-donut-wrap { display:flex; gap:14px; align-items:center; }
+.gl-donut { width:120px; height:120px; border-radius:50%; flex:0 0 120px; position:relative; }
+.gl-donut:after { content:""; position:absolute; inset:26px; border-radius:50%; background:var(--card); }
+.gl-donut-c { position:absolute; inset:0; display:grid; place-items:center; z-index:1; text-align:center; font-size:10px; color:var(--mut); }
+.gl-legl { flex:1; min-width:0; }
+.gl-leg { display:grid; grid-template-columns:10px 1fr auto; gap:7px; align-items:center; padding:4px 0; font-size:11px; }
+.gl-leg i { width:9px; height:9px; border-radius:50%; }
+
+/* Détail objectif (sheet) */
+.gl-d-head { display:flex; align-items:center; gap:12px; }
+.gl-d-emo { width:46px; height:46px; flex:0 0 46px; border-radius:14px; display:grid; place-items:center; font-size:22px; }
+.gl-d-head b { font-size:16px; display:block; } .gl-d-head small { font-size:11px; color:var(--mut); }
+.gl-d-main { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:14px 0 4px; }
+.gl-d-amt b { font-size:24px; font-weight:950; letter-spacing:-.6px; } .gl-d-amt small { font-size:12px; color:var(--mut); }
+.gl-d-rest { font-size:12px; color:var(--mut); margin-top:2px; }
+.gl-ring { width:74px; height:74px; flex:0 0 74px; }
+.gl-d-3 { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0; }
+.gl-d-3 .k { border:1px solid var(--line); border-radius:12px; padding:9px; text-align:center; }
+.gl-d-3 .k small { font-size:9px; color:var(--mut); display:block; } .gl-d-3 .k b { font-size:13px; display:block; margin-top:3px; }
+.gl-status { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:800; padding:6px 11px; border-radius:999px; }
+.gl-st-ahead { background:#e9f7ef; color:#12844b; } .gl-st-ontime { background:#eef4ff; color:#2f6bd6; }
+.gl-st-late { background:#fff3e0; color:#b76a00; } .gl-st-done { background:#fef6e0; color:#a9800c; } .gl-st-nodate { background:#f1f3f2; color:#68716b; }
+
+/* Scénarios "Et si ?" */
+.gl-scn { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 11px; border:1px solid var(--line); border-radius:12px; margin-top:8px; }
+.gl-scn.cur { background:#f1faf5; border-color:#cdeadb; }
+.gl-scn b { font-size:13px; } .gl-scn .date { font-size:12px; color:var(--mut); }
+.gl-scn .delta { font-size:11px; font-weight:850; }
+.gl-scn .delta.pos { color:var(--gl-p4); } .gl-scn .delta.neg { color:var(--gl-p3); }
+
+/* Graphique projection */
+.gl-svg { width:100%; height:auto; display:block; touch-action:pan-y; }
+.gl-grid { stroke:#eef3ef; stroke-width:1; }
+.gl-line { fill:none; stroke:var(--gl-p4); stroke-width:2.4; }
+.gl-line-proj { fill:none; stroke:var(--gl-p2); stroke-width:2; stroke-dasharray:4 3; }
+.gl-target-line { stroke:#e0a83a; stroke-width:1.2; stroke-dasharray:3 3; }
+.gl-axis { fill:var(--mut); font-size:8px; }
+
+/* Suivi mensuel (lignes compactes) */
+.gl-mrow { display:flex; align-items:center; gap:10px; padding:9px 2px; border-top:1px solid var(--line); }
+.gl-mrow:first-child { border-top:0; }
+.gl-mrow .mn { flex:0 0 62px; font-size:12px; font-weight:800; }
+.gl-mrow .mc { flex:1; text-align:center; font-size:12px; } .gl-mrow .mc small { display:block; font-size:9px; color:var(--mut); }
+.gl-mrow .mi { flex:0 0 auto; font-size:11px; font-weight:800; }
+
+/* Infos clés */
+.gl-info { display:flex; justify-content:space-between; padding:9px 2px; border-top:1px solid var(--line); font-size:12.5px; }
+.gl-info:first-child { border-top:0; } .gl-info b { font-weight:750; color:var(--mut); } .gl-info span { text-align:right; }
+
+/* Boutons d'action détail */
+.gl-acts { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:12px; }
+
+/* Emoji picker (comme Dépenses) */
+.gl-emopick { display:grid; grid-template-columns:repeat(6,1fr); gap:8px; margin:6px 0; }
+.gl-emopick button { aspect-ratio:1; border:1px solid var(--line); border-radius:12px; background:#fff; font-size:20px; display:grid; place-items:center; }
+.gl-emopick button.on { background:#eafaf1; border-color:#12a45f; }
+
+@media(max-width:380px){
+  .gl-ovc b { font-size:15px; }
+  .gl-emo { width:38px; height:38px; flex-basis:38px; font-size:18px; }
+  .gl-d-amt b { font-size:21px; }
+}
