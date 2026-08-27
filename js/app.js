@@ -48,10 +48,12 @@
   }; })();
   window.ORION_BUS = Bus;
   let _toastEl = null, _toastTimer = null;
-  function toast(msg) {
+  function toast(msg, undo) {
     if (!_toastEl) { _toastEl = document.createElement('div'); _toastEl.className = 'home-toast'; document.body.appendChild(_toastEl); }
-    _toastEl.textContent = msg; _toastEl.classList.add('show');
-    clearTimeout(_toastTimer); _toastTimer = setTimeout(() => _toastEl.classList.remove('show'), 2200);
+    _toastEl.innerHTML = esc(msg) + (undo ? ' <button class="undo" type="button">Annuler</button>' : '');
+    _toastEl.classList.add('show');
+    if (undo) { const b = _toastEl.querySelector('.undo'); if (b) b.onclick = () => { _toastEl.classList.remove('show'); try { undo(); } catch (_) {} }; }
+    clearTimeout(_toastTimer); _toastTimer = setTimeout(() => _toastEl.classList.remove('show'), undo ? 4200 : 2200);
   }
 
   /* ---------------------------------------------------------------------
@@ -169,6 +171,10 @@
   let page = 'home';
   let lastRenderedPage = null; // used by render() to reset scroll only on real page changes
   let txFilter = 'all';
+  let txView = 'due';       // 'due' | 'paid' — grands onglets Dépenses
+  let txQuick = 'all';      // all | late | installments | recurring
+  let txQuery = '';         // recherche live
+  let txPaidOpen = false;   // section "Payées récemment" repliée par défaut
   let planningRange = 30;
   let stratPreviewRate = null; // overrides extra.strategy.rate for live "et si" preview only
   let stratMetric = 'capital'; // 'capital' | 'interets' | 'versements' — métrique affichée sur "Évolution de ton capital"
@@ -211,14 +217,16 @@
       if (list.some(r => r.templateId === t.id)) return;
       const day = Math.min(num(t.dueDay) || 1, lastDayOfMonth(+k.slice(0, 4), +k.slice(5, 7)));
       const ov = (t.overrides && t.overrides[k]) || null;
-      list.push({
+      const nr = {
         name: ov?.name || t.name,
         amount: num(ov ? ov.amount : t.amount),
         cat: ov?.cat || t.cat || 'autres',
         paid: false, paidDate: '',
         dueDate: t.kind === 'income' ? '' : `${k}-${p2(day)}`,
         templateId: t.id, recurring: true, auto: !!t.auto, createdPeriod: k
-      });
+      };
+      if (t.customEmoji) nr.customEmoji = t.customEmoji;
+      list.push(nr);
       changed = true;
     });
     budget.monthlyData[k] = mo;
@@ -261,6 +269,23 @@
   }
 
   function isAutoIncome(r) { return !!(r && r.auto) || /salaire|paie|pay/i.test(r?.name || ''); }
+
+  /* Identité visuelle d'une dépense — ne renvoie JAMAIS de case vide.
+     Priorité : 1) emoji personnalisé (ligne, sinon modèle) 2) logo de marque
+     reconnu (brands.js) 3) emoji de catégorie 4) fallback générique. */
+  const CAT_EMOJI = {
+    logement: '🏠', alimentation: '🛒', transport: '🚗', loisirs: '🎮', sante: '🩺',
+    abonnements: '📺', assurances: '🛡️', credits: '🏦', enfants: '🧸', autres: '✨'
+  };
+  function templateOf(r) { return r && r.templateId ? (budget.recurringTemplates || []).find(t => t.id === r.templateId) : null; }
+  function identityOf(r) {
+    const tpl = templateOf(r);
+    const custom = (r && r.customEmoji) || (tpl && tpl.customEmoji) || '';
+    if (custom) return { mark: custom, cls: 'brand-generic', label: null, custom: true };
+    const br = brandOf(r.name, r.cat);
+    if (br.matched) return br;
+    return { mark: CAT_EMOJI[r.cat] || br.mark || '✨', cls: 'brand-generic', label: null };
+  }
 
   function dueInfo(r) {
     if (r.paid) return { cls: 'paid', label: r.paidDate ? 'Payé ' + dateLabel(r.paidDate) : 'Payé' };
@@ -886,23 +911,207 @@
     </div>`;
   }
 
+  /* ---- Dépenses : helpers dédiés (ne modifient pas rowTx, partagé ailleurs) ---- */
+  function expDueRank(r) { const d = daysUntilDate(r.dueDate); if (d == null) return 1e6; return d; }
+  function expColor(r) {
+    if (r.paid) return 'green';
+    const d = daysUntilDate(r.dueDate);
+    if (d == null) return 'green';
+    if (d <= 0) return 'red';
+    if (d <= 5) return 'orange';
+    return 'green';
+  }
+  function instProgress(r) {
+    const tpl = templateOf(r);
+    if (!tpl || num(tpl.installments) <= 0) return null;
+    const oi = occurrenceIndex(tpl, (r.dueDate || key()).slice(0, 7));
+    const n = (oi != null ? oi : 0) + 1, tot = num(tpl.installments);
+    return { n, tot };
+  }
+  function matchQuery(r, q) {
+    if (!q) return true;
+    const tpl = templateOf(r);
+    const hay = [r.name, CATS[r.cat], brandOf(r.name, r.cat).label, r.note, String(num(r.amount)), eur(r.amount), freqLabel(tpl)].join(' ').toLowerCase();
+    return hay.includes(q.toLowerCase());
+  }
+  function passQuick(r) {
+    if (txQuick === 'late') { const d = daysUntilDate(r.dueDate); return d != null && d < 0; }
+    if (txQuick === 'installments') { const t = templateOf(r); return !!(t && num(t.installments) > 0); }
+    if (txQuick === 'recurring') { return !!(r.templateId && !(templateOf(r) && num(templateOf(r).installments) > 0)); }
+    return true;
+  }
+  function expDueRow(r, idx) {
+    const id = identityOf(r), info = dueInfo(r), color = expColor(r), tpl = templateOf(r);
+    const ip = instProgress(r);
+    const instLine = ip ? `<div class="exp-ins"><span class="ins-badge">Échéance ${ip.n} sur ${ip.tot}</span><span class="ins-dots">${Array.from({ length: ip.tot }, (_, i) => `<i class="ins-dot ${i < ip.n ? 'on' : ''}"></i>`).join('')}</span></div>` : '';
+    const dotColor = ip ? 'blue' : color;
+    return `<div class="exp-row" data-swipe="${idx}">
+      <button class="exp-dotcol" data-toggle="expense" data-index="${idx}" aria-label="Marquer payé"><span class="exp-ring dot-${dotColor}"></span></button>
+      <button class="brandmark exp-logo ${id.cls}" data-edit-emoji="expense" data-index="${idx}" aria-label="Changer l’icône">${id.mark}</button>
+      <div class="exp-main clickable" data-edit-tx="expense" data-index="${idx}">
+        <b>${esc(r.name || 'Sans libellé')}</b>
+        <small>${CATS[r.cat] || 'Autres'} · ${freqLabel(tpl)}</small>
+        <div class="exp-tags"><span class="exp-badge b-${dotColor}">${info.label}</span><span class="exp-date">${r.dueDate ? dateLabel(r.dueDate) : 'Sans date'}</span>${r.reportedFrom ? '<span class="exp-badge b-orange">Reportée</span>' : ''}</div>
+        ${instLine}
+      </div>
+      <div class="exp-right clickable" data-edit-tx="expense" data-index="${idx}">
+        <b class="exp-amt">-${eur(r.amount)}</b><small class="when-${dotColor}">${info.label}</small>
+      </div>
+      <span class="exp-chev">›</span>
+    </div>`;
+  }
+  function expPaidRow(r, idx) {
+    const id = identityOf(r), tpl = templateOf(r);
+    return `<div class="exp-row paid" data-swipe="${idx}">
+      <button class="brandmark exp-logo ${id.cls}" data-edit-emoji="expense" data-index="${idx}" aria-label="Changer l’icône">${id.mark}</button>
+      <div class="exp-main clickable" data-edit-tx="expense" data-index="${idx}">
+        <b>${esc(r.name || 'Sans libellé')}</b>
+        <small>${CATS[r.cat] || 'Autres'} · ${freqLabel(tpl)}</small>
+        <small class="exp-date">${r.paidDate ? 'Payée ' + dateLabel(r.paidDate) : (r.dueDate ? dateLabel(r.dueDate) : '')}</small>
+      </div>
+      <div class="exp-right"><b class="exp-amt">-${eur(r.amount)}</b><span class="exp-paidlbl">Payée</span></div>
+      <button class="exp-done" data-toggle="expense" data-index="${idx}" aria-label="Marquer non payé">✓</button>
+    </div>`;
+  }
   function renderTransactions() {
     setTitle('Dépenses');
     const m = monthObj();
-    let rows = [];
-    (m.income || []).forEach((r, i) => rows.push({ r, t: 'income', i }));
-    (m.expenses || []).forEach((r, i) => rows.push({ r, t: 'expense', i }));
-    if (txFilter !== 'all') rows = rows.filter(x => x.t === txFilter);
-    $('#view').innerHTML = `<div class="stack transactions-page">
-      <div class="monthbar"><select id="mSel">${ML.map((x, i) => `<option value="${i}" ${i === month ? 'selected' : ''}>${x}</option>`).join('')}</select><select id="ySel">${[year - 1, year, year + 1].map(y => `<option ${y === year ? 'selected' : ''}>${y}</option>`).join('')}</select></div>
-      <div class="summary"><div><small>Solde actuel</small><small style="display:block;color:var(--mut)">Fin de mois estimée : ${tSign(totals().final)}</small></div><strong>${tSign(totals().current)}</strong></div>
-      <div class="tabs"><button data-filter="all" class="${txFilter === 'all' ? 'active' : ''}">Toutes</button><button data-filter="income" class="${txFilter === 'income' ? 'active' : ''}">Revenus</button><button data-filter="expense" class="${txFilter === 'expense' ? 'active' : ''}">Dépenses</button></div>
-      <section class="card list">${rows.length ? rows.map(x => rowTx(x.r, x.t, x.i)).join('') : '<div class="empty">Aucune transaction.</div>'}</section>
-    </div><button class="tx-fab" data-add-tx aria-label="Ajouter une transaction"><span>＋</span><b>Ajouter</b></button>`;
+    const t = totals();
+    const all = (m.expenses || []).map((r, i) => ({ r, i }));
+    const q = txQuery.trim();
+    const due = all.filter(x => !x.r.paid).filter(x => passQuick(x.r) && matchQuery(x.r, q)).sort((a, b) => expDueRank(a.r) - expDueRank(b.r));
+    const paid = all.filter(x => x.r.paid).filter(x => matchQuery(x.r, q)).sort((a, b) => (b.r.paidDate || b.r.dueDate || '').localeCompare(a.r.paidDate || a.r.dueDate || ''));
+    const dueCount = all.filter(x => !x.r.paid).length;
+    const paidCount = all.filter(x => x.r.paid).length;
+    const lateCount = all.filter(x => { const d = daysUntilDate(x.r.dueDate); return !x.r.paid && d != null && d < 0; }).length;
+    const instCount = all.filter(x => { const tp = templateOf(x.r); return tp && num(tp.installments) > 0; }).length;
+    const recCount = all.filter(x => x.r.templateId && !(templateOf(x.r) && num(templateOf(x.r).installments) > 0)).length;
+    const paidPct = t.tex > 0 ? Math.round((t.pex / t.tex) * 100) : 0;
+
+    const chip = (id, label, count) => `<button class="exp-chip ${txQuick === id ? 'active' : ''}" data-tx-quick="${id}">${label}${count != null ? `<span class="c">${count}</span>` : ''}</button>`;
+
+    const dueList = due.length ? due.map(x => expDueRow(x.r, x.i)).join('') : '<div class="empty">✓ Rien à payer pour ce filtre.</div>';
+    const paidPreview = txPaidOpen ? paid : paid.slice(0, 3);
+    const paidList = paid.length ? paidPreview.map(x => expPaidRow(x.r, x.i)).join('') : '<div class="empty">Aucune dépense payée.</div>';
+
+    const listBlock = txView === 'due'
+      ? `<section class="card">
+           <div class="exp-lhead"><h2>À venir</h2><span class="exp-sort">↕ Trier par date</span></div>
+           ${dueList}
+         </section>
+         <section class="card">
+           <button class="exp-paidhead" data-tx-paidtoggle><span class="l"><span class="ic">✓</span>Payées récemment${paidCount ? ` (${paidCount})` : ''}</span><span class="exp-caret ${txPaidOpen ? 'open' : ''}">˅</span></button>
+           ${txPaidOpen || paidCount <= 3 ? paidList : paid.slice(0, 3).map(x => expPaidRow(x.r, x.i)).join('')}
+           ${paidCount > 3 && !txPaidOpen ? '<button class="link exp-voir" data-tx-paidtoggle>Tout voir ›</button>' : ''}
+         </section>`
+      : `<section class="card">
+           <div class="exp-lhead"><h2>Payées récemment</h2></div>
+           ${paid.length ? paid.map(x => expPaidRow(x.r, x.i)).join('') : '<div class="empty">Aucune dépense payée ce mois-ci.</div>'}
+         </section>`;
+
+    $('#view').innerHTML = `<div class="stack exp-page">
+      <div class="exp-toolbar">
+        <div class="exp-search"><span class="si">⌕</span><input id="txSearch" type="search" placeholder="Rechercher (nom, marque, montant…)" value="${esc(txQuery)}" autocomplete="off"></div>
+        <button class="exp-add" data-add-tx><span>＋</span><b>Ajouter</b></button>
+      </div>
+
+      <section class="card">
+        <div class="exp-sum">
+          <div class="m" data-tx-view="all"><small>Dépenses prévues</small><b>${eur(t.tex)}</b><span class="u">Sur le mois</span></div>
+          <div class="m pos" data-tx-view="paid"><small>Déjà payées</small><b>${eur(t.pex)}</b><span class="u">Ce mois</span></div>
+          <div class="m warn" data-tx-view="due"><small>À payer</small><b>${eur(t.future)}</b><span class="u">Reste à payer</span></div>
+          <div class="m proj" data-home-explain="projection"><small>Prévision fin de mois</small><b>${eur(t.final)}</b><span class="u">si rien ne change</span></div>
+        </div>
+        <div class="exp-progress"><span style="width:${Math.max(0, Math.min(100, paidPct))}%"></span></div>
+        <div class="exp-progress-lbl">${paidPct}% réglé</div>
+      </section>
+
+      <div class="exp-tabs">
+        <button class="exp-tab ${txView === 'due' ? 'active' : ''}" data-tx-view="due"><span class="tt">🕓 À payer (${dueCount})</span><span class="ts">Du plus proche au plus loin</span></button>
+        <button class="exp-tab ${txView === 'paid' ? 'active' : ''}" data-tx-view="paid"><span class="tt">✓ Payées (${paidCount})</span><span class="ts">Classées par date (récent)</span></button>
+      </div>
+
+      <div class="exp-chips">
+        ${chip('all', 'Toutes')}
+        ${chip('late', 'Retard', lateCount)}
+        ${chip('installments', 'Échéanciers', instCount)}
+        ${chip('recurring', 'Récurrentes', recCount)}
+      </div>
+
+      ${listBlock}
+    </div>`;
+
+    if (txQuery) { const si = $('#txSearch'); if (si) { si.focus(); try { si.setSelectionRange(si.value.length, si.value.length); } catch (_) {} } }
   }
 
-  function eventsForDay(y, m2, d) {
-    const ds = iso(y, m2, d), a = [];
+  function setExpenseEmoji(type, idx, emoji) {
+    const list = monthObj()[type === 'income' ? 'income' : 'expenses'];
+    const r = list[+idx]; if (!r) return;
+    const tpl = templateOf(r);
+    if (emoji) { r.customEmoji = emoji; if (tpl) tpl.customEmoji = emoji; }
+    else { delete r.customEmoji; if (tpl) delete tpl.customEmoji; }
+    saveBudget(); render();
+    toast(emoji ? 'Icône mise à jour' : 'Icône automatique rétablie');
+  }
+  function identityPicker(type, idx) {
+    const list = monthObj()[type === 'income' ? 'income' : 'expenses'];
+    const r = list[+idx]; if (!r) return;
+    const tpl = templateOf(r);
+    const cur = (r.customEmoji || (tpl && tpl.customEmoji) || '');
+    const br = brandOf(r.name, r.cat);
+    const preview = identityOf(r);
+    const EMO = ['🍽️','🛒','🏠','⚡','💧','📱','🌐','🚗','🚆','❤️','🩺','🏦','🎒','🧸','🛡️','🎮','✈️','🎁','☕','💇','🥋','🍿','🐶','💊','🧾','✨'];
+    openSheet('Identité visuelle', `
+      <div class="idp-cur"><div class="brandmark ${preview.cls}" style="width:54px;height:54px;font-size:24px;border-radius:15px">${preview.mark}</div>
+        <div><b>${esc(r.name || 'Sans libellé')}</b><small>${br.matched ? 'Logo reconnu : ' + esc(br.label) : 'Catégorie : ' + (CATS[r.cat] || 'Autres')}</small></div></div>
+      ${cur ? `<button class="ghost" type="button" data-emoji-set="__auto__" data-etype="${type}" data-eidx="${idx}">↺ Revenir à l’automatique</button>` : ''}
+      <div class="group-title">Choisir un emoji</div>
+      <div class="idp-grid">${EMO.map(e => `<button type="button" class="idp-emo ${e === cur ? 'sel' : ''}" data-emoji-set="${e}" data-etype="${type}" data-eidx="${idx}">${e}</button>`).join('')}</div>
+      <form class="form" id="emojiFreeForm"><input type="hidden" name="etype" value="${type}"><input type="hidden" name="eidx" value="${idx}"><label>Saisir un emoji personnalisé<input name="emoji" maxlength="4" value="${esc(cur)}" placeholder="Ex : 🍝"></label><button class="action">Enregistrer</button></form>
+    `);
+  }
+  function reportSheet(idx) {
+    const r = monthObj().expenses[+idx]; if (!r) return;
+    const base = r.dueDate ? new Date(r.dueDate + 'T12:00:00') : new Date();
+    const plus = n => { const d = new Date(base); d.setDate(d.getDate() + n); return iso(d.getFullYear(), d.getMonth(), d.getDate()); };
+    const nextMonth1 = () => { const d = new Date(base); d.setMonth(d.getMonth() + 1, 1); return iso(d.getFullYear(), d.getMonth(), 1); };
+    openSheet('Reporter la dépense', `
+      <div class="insight">« ${esc(r.name)} » — actuellement le ${r.dueDate ? dateLabelLong(r.dueDate) : '—'}.</div>
+      <div class="exp-quickopts">
+        <button type="button" data-report="${idx}" data-date="${plus(7)}">Dans 7 jours · ${dateLabel(plus(7))}</button>
+        <button type="button" data-report="${idx}" data-date="${plus(14)}">Dans 14 jours · ${dateLabel(plus(14))}</button>
+        <button type="button" data-report="${idx}" data-date="${nextMonth1()}">Début du mois prochain · ${dateLabel(nextMonth1())}</button>
+      </div>
+      <form class="form" id="reportForm"><input type="hidden" name="idx" value="${idx}"><label>Ou choisir une date<input type="date" name="date" value="${r.dueDate || today()}"></label><button class="action">Reporter</button></form>
+    `);
+  }
+  function reportExpenseTo(idx, newDate) {
+    const cur = monthObj(); const r = cur.expenses[+idx]; if (!r || !newDate) return;
+    const old = r.dueDate; r.reportedFrom = r.reportedFrom || old || '';
+    const newKey = newDate.slice(0, 7);
+    if (newKey !== key()) {
+      r.dueDate = newDate;
+      cur.expenses.splice(+idx, 1);
+      const tgt = budget.monthlyData[newKey] || (budget.monthlyData[newKey] = { income: [], expenses: [], savings: { amount: 0, paid: false, date: '' }, meta: {} });
+      tgt.expenses.push(r);
+      saveBudget(); closeSheet(); render();
+      toast('Reportée au ' + dateLabel(newDate)); // déplacement inter-mois : pas d'annulation simple
+    } else {
+      r.dueDate = newDate;
+      saveBudget(); closeSheet(); render();
+      toast('Reportée au ' + dateLabel(newDate), () => { const rr = monthObj().expenses[+idx]; if (rr) { rr.dueDate = old; if (rr.reportedFrom === (old || '')) delete rr.reportedFrom; saveBudget(); render(); } });
+    }
+  }
+  function duplicateExpense(idx) {
+    const r = monthObj().expenses[+idx]; if (!r) return;
+    const copy = { name: r.name, amount: num(r.amount), cat: r.cat || 'autres', paid: false, paidDate: '', dueDate: r.dueDate || today() };
+    if (r.customEmoji) copy.customEmoji = r.customEmoji;
+    monthObj().expenses.push(copy);
+    saveBudget(); closeSheet(); render();
+    toast('Dépense dupliquée');
+  }
+
+  function eventsForDay(y, m2, d) {    const ds = iso(y, m2, d), a = [];
     const mo = `${y}-${p2(m2 + 1)}` === key() ? monthObj() : projectMonth(`${y}-${p2(m2 + 1)}`);
     (mo.income || []).forEach(r => { if (r.dueDate === ds || (!r.dueDate && d === 1)) a.push('green'); });
     (mo.expenses || []).forEach(r => { if (r.dueDate === ds) { const tp = r.templateId && (budget.recurringTemplates || []).find(x => x.id === r.templateId); a.push(tp && num(tp.installments) > 0 ? 'orange' : 'red'); } });
@@ -1416,6 +1625,7 @@
       <label><input type="checkbox" name="paid" ${r.paid ? 'checked' : ''}> Déjà payé / reçu</label>
       ${tpl ? `<label>Cette modification s’applique à<select name="scope"><option value="all">Toute la série</option><option value="only">Seulement cette occurrence</option><option value="following">Cette occurrence et les suivantes</option></select></label>` : ''}
       <button class="action">Enregistrer</button>
+      ${idx !== '' && type === 'expense' ? `<div class="v23-actions" style="margin-top:4px"><button type="button" data-edit-emoji="expense" data-index="${idx}">🎨 Icône</button><button type="button" data-report-tx="${idx}">↦ Reporter</button><button type="button" data-dup-tx="${idx}">⧉ Dupliquer</button></div>` : ''}
       ${idx !== '' && type === 'expense' ? `<button type="button" class="ghost" data-whatif-remove="${idx}">Et si je supprimais cette dépense ?</button>` : ''}
       ${idx !== '' ? '<button type="button" class="ghost danger" data-delete-tx>Supprimer</button>' : ''}
     </form>`);
@@ -1636,7 +1846,16 @@
 
   document.addEventListener('click', e => {
     const tog = e.target.closest('[data-toggle]');
-    if (tog) { const arr = tog.dataset.toggle === 'income' ? monthObj().income : monthObj().expenses; const item = arr[+tog.dataset.index]; if (item && !isAutoIncome(item)) { item.paid = !item.paid; item.paidDate = item.paid ? today() : ''; saveBudget(); render(); toast(item.paid ? (tog.dataset.toggle === 'income' ? '✓ Marqué reçu' : '✓ Marqué payé') : 'Repassé en prévu'); } return; }
+    if (tog) { const arr = tog.dataset.toggle === 'income' ? monthObj().income : monthObj().expenses; const iidx = +tog.dataset.index; const item = arr[iidx]; if (item && !isAutoIncome(item)) { const kind = tog.dataset.toggle; item.paid = !item.paid; item.paidDate = item.paid ? today() : ''; const wasPaid = item.paid; saveBudget(); render(); toast(wasPaid ? (kind === 'income' ? '✓ Marqué reçu' : '✓ Marqué payé') : 'Repassé en prévu', () => { const a2 = kind === 'income' ? monthObj().income : monthObj().expenses; const it2 = a2[iidx]; if (it2) { it2.paid = !it2.paid; it2.paidDate = it2.paid ? today() : ''; saveBudget(); render(); } }); } return; }
+
+    const txv = e.target.closest('[data-tx-view]'); if (txv) { const v = txv.dataset.txView; txView = (v === 'paid') ? 'paid' : (v === 'all' ? 'due' : v); if (v === 'all') txQuick = 'all'; if (page !== 'transactions') { page = 'transactions'; } render(); return; }
+    const txq = e.target.closest('[data-tx-quick]'); if (txq) { txQuick = txq.dataset.txQuick; render(); return; }
+    if (e.target.closest('[data-tx-paidtoggle]')) { txPaidOpen = !txPaidOpen; render(); return; }
+    const eem = e.target.closest('[data-edit-emoji]'); if (eem) return identityPicker(eem.dataset.editEmoji, eem.dataset.index);
+    const est = e.target.closest('[data-emoji-set]'); if (est) { const v = est.dataset.emojiSet; return setExpenseEmoji(est.dataset.etype, est.dataset.eidx, v === '__auto__' ? '' : v); }
+    const rpt = e.target.closest('[data-report-tx]'); if (rpt) return reportSheet(rpt.dataset.reportTx);
+    const rdo = e.target.closest('[data-report]'); if (rdo) return reportExpenseTo(rdo.dataset.report, rdo.dataset.date);
+    const dup = e.target.closest('[data-dup-tx]'); if (dup) return duplicateExpense(dup.dataset.dupTx);
 
     const hx = e.target.closest('[data-home-explain]'); if (hx) return homeExplain(hx.dataset.homeExplain);
     if (e.target.closest('[data-home-topay]')) return homeTopay();
@@ -1705,6 +1924,7 @@
       $('#stratWhatifValue').textContent = eur(stratWhatIfDelta) + ' / mois';
       $('#whatifStratResult').innerHTML = whatIfStrategyBlock(stratWhatIfDelta, strategyCalc(rate));
     }
+    if (e.target.id === 'txSearch') { txQuery = e.target.value; renderTransactions(); return; }
     if (e.target.id === 'txName') { const brandHint = document.querySelector('.brand-hint'); const b = brandOf(e.target.value, $('#txForm')?.cat?.value); if (brandHint) { if (b.matched) { brandHint.innerHTML = `<span class="brandmark ${b.cls}">${b.mark}</span> Reconnu : <b>${esc(b.label)}</b>`; brandHint.style.display = ''; } else brandHint.style.display = 'none'; } }
   });
 
@@ -1712,6 +1932,8 @@
     e.preventDefault();
     const fd = new FormData(e.target);
     if (e.target.id === 'txForm') return saveTx(fd);
+    if (e.target.id === 'emojiFreeForm') { setExpenseEmoji(fd.get('etype'), fd.get('eidx'), (fd.get('emoji') || '').trim()); return; }
+    if (e.target.id === 'reportForm') { reportExpenseTo(fd.get('idx'), fd.get('date')); return; }
     if (e.target.id === 'strategyForm') {
       extra.strategy = {
         capital: Math.max(0, num(fd.get('capital'))),
@@ -1781,8 +2003,23 @@
 
   document.addEventListener('change', e => {
     if (e.target.id === 'mSel') { month = +e.target.value; saveBudget(); render(); }
-    if (e.target.id === 'ySel') { year = +e.target.value; saveBudget(); render(); }
-  });
+    if (e.target.id === 'ySel') { year = +e.target.value; saveBudget(); render(); }  });
+
+  // Swipe tactile léger sur une ligne de dépense (raccourci ; toutes les actions
+  // restent accessibles via la fiche). Gauche = payer/annuler, droite = reporter.
+  let _swX = null, _swY = null, _swEl = null;
+  document.addEventListener('touchstart', e => { const row = e.target.closest && e.target.closest('.exp-row[data-swipe]'); if (!row) { _swEl = null; return; } const t = e.touches[0]; _swX = t.clientX; _swY = t.clientY; _swEl = row; }, { passive: true });
+  document.addEventListener('touchend', e => {
+    if (_swEl == null || _swX == null) return;
+    const t = e.changedTouches[0]; const dx = t.clientX - _swX, dy = t.clientY - _swY;
+    const row = _swEl; _swEl = null; _swX = null;
+    if (Math.abs(dx) < 55 || Math.abs(dy) > 40) return; // pas un swipe horizontal net
+    const idx = row.dataset.swipe; const item = monthObj().expenses[+idx]; if (!item) return;
+    if (dx < 0) { // gauche → payer / dépayer
+      const iidx = +idx; item.paid = !item.paid; item.paidDate = item.paid ? today() : ''; const wp = item.paid; saveBudget(); render();
+      toast(wp ? '✓ Marqué payé' : 'Repassé en prévu', () => { const it = monthObj().expenses[iidx]; if (it) { it.paid = !it.paid; it.paidDate = it.paid ? today() : ''; saveBudget(); render(); } });
+    } else if (!item.paid) { reportSheet(idx); } // droite → reporter
+  }, { passive: true });
 
   window.addEventListener('error', e => console.error('Budget Orion', e.error || e.message));
 
