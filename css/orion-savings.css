@@ -1,0 +1,135 @@
+/* ============================================================================
+   Budget Orion — Onglet Épargne (coach d'épargne : prévu ≠ réalisé).
+   Additif : ne modifie aucun CSS validé. Statuts = texte + symbole + couleur.
+   ========================================================================= */
+.sv-page { padding-bottom: calc(var(--nav) + env(safe-area-inset-bottom) + 16px); }
+.sv-page * { min-width: 0; }
+:root { --sv-green:#12a45f; --sv-orange:#f0932b; --sv-red:#ef4565; --sv-gray:#c2ccc6; --sv-gold:#c99700; }
+
+.sv-sub { color: var(--mut); font-size: 12px; margin: -4px 2px 2px; }
+
+/* Deux héros : Épargne totale (vert plein) + Couverture (blanc) */
+.sv-heros { display:grid; grid-template-columns:1.15fr 1fr; gap:10px; }
+.sv-hero-a { background:linear-gradient(150deg,#0e9a54,#0c7f45); color:#fff; border-radius:17px; padding:15px; box-shadow:0 10px 24px rgba(10,150,79,.20); }
+.sv-hero-a small { font-size:11px; opacity:.92; }
+.sv-hero-a b { display:block; font-size:24px; font-weight:950; letter-spacing:-.6px; margin:5px 0 3px; }
+.sv-hero-a .up { font-size:11px; opacity:.95; }
+.sv-hero-b { background:var(--card); border:1px solid var(--line); border-radius:17px; padding:15px; box-shadow:var(--shadow); }
+.sv-hero-b small { font-size:11px; color:var(--mut); }
+.sv-hero-b b { display:block; font-size:22px; font-weight:900; margin:5px 0 3px; color:var(--ink); }
+.sv-hero-b .track { height:6px; border-radius:99px; background:#eef2f0; overflow:hidden; margin-top:6px; }
+.sv-hero-b .track span { display:block; height:100%; background:var(--sv-green); border-radius:99px; }
+
+/* Poches */
+.sv-pocket { display:flex; align-items:center; gap:11px; padding:11px 2px; border-top:1px solid var(--line); }
+.sv-pocket:first-child { border-top:0; }
+.sv-pocket .pemo { width:38px; height:38px; flex:0 0 38px; border-radius:12px; background:#eef8f2; display:grid; place-items:center; font-size:18px; }
+.sv-pocket .pmain { flex:1; min-width:0; }
+.sv-pocket .pmain b { font-size:13px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.sv-pocket .pmain .amt { font-size:12px; color:var(--mut); }
+.sv-pocket .track { height:6px; border-radius:99px; background:#eef2f0; overflow:hidden; margin-top:5px; }
+.sv-pocket .track span { display:block; height:100%; border-radius:99px; background:var(--sv-green); }
+.sv-pocket .pct { flex:0 0 auto; font-size:13px; font-weight:850; color:var(--gd); }
+.sv-pocket .star { color:var(--sv-gold); }
+
+/* Carte validation du mois */
+.sv-valid { border:1px solid var(--line); }
+.sv-valid-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.sv-valid-head h2 { font-size:15px; margin:0; font-weight:850; }
+.sv-status { font-size:11px; font-weight:850; padding:3px 10px; border-radius:999px; }
+.sv-st-respected { background:#e9f7ef; color:#12844b; } .sv-st-exceeded { background:#fef6e0; color:#a9800c; }
+.sv-st-partial { background:#fff3e0; color:#b76a00; } .sv-st-missed { background:#fdecec; color:#d02f45; }
+.sv-st-topay { background:#fff3e0; color:#b76a00; } .sv-st-future { background:#f1f3f2; color:#7c857f; }
+.sv-valid-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px; }
+.sv-vk { }
+.sv-vk small { font-size:10.5px; color:var(--mut); display:block; }
+.sv-vk b { font-size:19px; font-weight:900; display:block; margin-top:2px; }
+.sv-vk.plan b { color:var(--ink); } .sv-vk.real b { color:var(--sv-green); }
+
+/* Respect des engagements — timeline 12 mois */
+.sv-reg-head { display:flex; align-items:center; justify-content:space-between; }
+.sv-reg-year { display:flex; align-items:center; gap:8px; }
+.sv-reg-year button { width:26px; height:26px; border-radius:8px; border:1px solid var(--line); background:#fff; color:var(--gd); font-size:13px; }
+.sv-months { display:grid; grid-template-columns:repeat(12,1fr); gap:3px; margin:10px 0 6px; }
+.sv-mo { display:flex; flex-direction:column; align-items:center; gap:4px; padding:5px 0; border-radius:9px; }
+.sv-mo .l { font-size:8.5px; color:var(--mut); font-weight:700; }
+.sv-mo .s { width:17px; height:17px; border-radius:50%; display:grid; place-items:center; font-size:10px; color:#fff; font-weight:900; }
+.sv-mo.sel { background:#f2fbf6; }
+.s-respected { background:var(--sv-green); } .s-exceeded { background:var(--sv-gold); }
+.s-partial { background:var(--sv-orange); } .s-missed { background:var(--sv-red); }
+.s-topay { background:#fff; border:1.5px solid var(--sv-orange); color:var(--sv-orange); }
+.s-future { background:#fff; border:1.5px solid var(--sv-gray); color:transparent; } .s-none { background:#eef2f0; }
+.sv-reg-counts { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:10px; }
+.sv-rc { border-radius:12px; padding:9px; text-align:center; }
+.sv-rc small { font-size:9.5px; display:block; }
+.sv-rc b { font-size:16px; display:block; margin-top:2px; }
+.sv-rc.g { background:#f1faf5; } .sv-rc.g b { color:var(--sv-green); }
+.sv-rc.o { background:#fff7ec; } .sv-rc.o b { color:var(--sv-orange); }
+.sv-rc.r { background:#fdf0f2; } .sv-rc.r b { color:var(--sv-red); }
+.sv-legend { display:flex; flex-wrap:wrap; gap:8px 12px; font-size:10px; color:var(--mut); margin-top:10px; }
+.sv-legend span { display:flex; align-items:center; gap:4px; }
+.sv-legend i { width:9px; height:9px; border-radius:50%; display:inline-block; }
+
+/* Retard / Avance */
+.sv-delay { display:flex; align-items:center; gap:12px; }
+.sv-delay .ic { width:42px; height:42px; flex:0 0 42px; border-radius:13px; display:grid; place-items:center; font-size:20px; }
+.sv-delay.late .ic { background:#fdf0f2; } .sv-delay.ahead .ic { background:#f1faf5; }
+.sv-delay .dm { flex:1; min-width:0; }
+.sv-delay .dm b { font-size:20px; font-weight:900; display:block; }
+.sv-delay.late .dm b { color:var(--sv-red); } .sv-delay.ahead .dm b { color:var(--sv-green); }
+.sv-delay .dm small { font-size:11px; color:var(--mut); }
+.sv-delay .go { flex:0 0 auto; }
+
+/* Tableau régularité mobile (lignes compactes, jamais desktop) */
+.sv-tbl { }
+.sv-trow { display:flex; align-items:center; gap:10px; padding:10px 2px; border-top:1px solid var(--line); }
+.sv-trow:first-child { border-top:0; }
+.sv-trow .mn { flex:0 0 74px; font-size:12.5px; font-weight:800; }
+.sv-trow .col { flex:1; min-width:0; text-align:center; }
+.sv-trow .col small { font-size:9px; color:var(--mut); display:block; }
+.sv-trow .col b { font-size:12.5px; }
+.sv-trow .col.real b { color:var(--sv-green); }
+.sv-trow .stt { flex:0 0 auto; font-size:11px; font-weight:850; }
+
+/* Chart prévu vs réalisé */
+.sv-chart-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+.sv-chart-head h2 { font-size:15px; margin:0; font-weight:850; }
+.sv-modes { display:flex; background:#f0f3f1; border-radius:10px; padding:2px; }
+.sv-modes button { padding:5px 11px; border-radius:8px; font-size:11px; font-weight:800; color:#5f6862; }
+.sv-modes button.active { background:#fff; color:var(--gd); box-shadow:0 1px 4px rgba(0,0,0,.06); }
+.sv-legend2 { display:flex; gap:14px; margin:2px 0 6px; font-size:11px; color:#5f6862; }
+.sv-legend2 i { width:9px; height:9px; border-radius:2px; display:inline-block; margin-right:5px; }
+.sv-svg { width:100%; height:auto; display:block; touch-action:pan-y; }
+.sv-bar-plan { fill:#d7e0da; } .sv-bar-real { fill:var(--sv-green); }
+.sv-line-plan { fill:none; stroke:#b8c2bc; stroke-width:2; stroke-dasharray:4 3; }
+.sv-line-real { fill:none; stroke:var(--sv-green); stroke-width:2.4; }
+.sv-axis { fill:var(--mut); font-size:8px; }
+.sv-grid { stroke:#eef3ef; stroke-width:1; }
+
+/* Insights */
+.sv-ins { display:flex; align-items:flex-start; gap:10px; padding:11px 2px; border-top:1px solid var(--line); }
+.sv-ins:first-child { border-top:0; }
+.sv-ins .ic { flex:0 0 32px; width:32px; height:32px; border-radius:10px; display:grid; place-items:center; font-size:15px; background:#f1f6f3; }
+.sv-ins.action .ic { background:#fff3e0; } .sv-ins.good .ic { background:#f1faf5; }
+.sv-ins .tx { flex:1; min-width:0; font-size:12.5px; line-height:1.4; }
+.sv-ins .chev { color:#c2ccc6; align-self:center; }
+
+/* Validation sheet */
+.sv-quick { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin:6px 0; }
+.sv-quick button { border:1px solid var(--line); background:#fff; border-radius:11px; padding:11px 4px; font-size:13px; font-weight:850; color:var(--gd); }
+.sv-quick button.on { background:#eafaf1; border-color:#bce6cf; }
+.sv-opt { display:flex; align-items:center; gap:10px; width:100%; border:1px solid var(--line); background:#fff; border-radius:12px; padding:12px; font-size:13px; font-weight:750; margin-top:8px; text-align:left; }
+.sv-opt .k { width:26px;height:26px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:13px;flex:0 0 26px; }
+.sv-opt.yes .k { background:var(--sv-green); } .sv-opt.part .k { background:var(--sv-orange); } .sv-opt.no .k { background:var(--sv-red); }
+
+/* Rattrapage */
+.sv-catch-opt { display:flex; align-items:center; justify-content:space-between; border:1px solid var(--line); border-radius:13px; padding:13px; margin-top:9px; }
+.sv-catch-opt.sel { border-color:#12a45f; background:#f2fbf6; }
+.sv-catch-opt b { font-size:15px; } .sv-catch-opt small { font-size:11px; color:var(--mut); }
+
+@media(max-width:380px){
+  .sv-hero-a b { font-size:21px; } .sv-hero-b b { font-size:19px; }
+  .sv-mo .s { width:15px; height:15px; }
+  .sv-quick button { font-size:12px; }
+  .sv-trow .mn { flex-basis:60px; font-size:11.5px; }
+}
