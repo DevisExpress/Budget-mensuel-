@@ -1,0 +1,118 @@
+/* ============================================================================
+   Budget Orion — Onglet Dépenses. Styles ADDITIFS uniquement.
+   Réutilise les tokens de app.css. Ne modifie ni app.css, ni orion-home.css,
+   ni les autres écrans.
+   ========================================================================= */
+
+.exp-page{padding-bottom:calc(var(--nav) + env(safe-area-inset-bottom) + 16px)}
+
+/* Barre d'outils haute (recherche + filtres + ajouter) */
+.exp-toolbar{display:flex;gap:8px;align-items:center}
+.exp-search{flex:1;display:flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:13px;padding:9px 12px;box-shadow:var(--shadow)}
+.exp-search input{flex:1;border:0;background:none;font-size:13px;outline:none}
+.exp-search .si{color:var(--mut);font-size:15px}
+.exp-add{display:flex;align-items:center;gap:7px;background:linear-gradient(#11a85c,#078446);color:#fff;border-radius:13px;padding:10px 15px;font-weight:850;font-size:13px;box-shadow:0 6px 16px rgba(7,132,70,.24)}
+.exp-add span{font-size:19px;line-height:1}
+.exp-add:active{transform:scale(.96)}
+
+/* Résumé compact 4 métriques */
+.exp-sum{display:grid;grid-template-columns:repeat(4,1fr);gap:2px}
+.exp-sum .m{text-align:left;padding:2px 6px;min-width:0;border-left:1px solid var(--line)}
+.exp-sum .m:first-child{border-left:0}
+.exp-sum .m small{display:block;font-size:9.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.exp-sum .m b{display:block;font-size:15px;font-weight:900;letter-spacing:-.4px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.exp-sum .m .u{font-size:9px;color:var(--mut);font-weight:600}
+.exp-sum .m.pos b{color:#12a45f}.exp-sum .m.warn b{color:#f0932b}.exp-sum .m.proj b{color:#0f8a4c}
+.exp-progress{height:5px;border-radius:99px;background:#eef2ef;overflow:hidden;margin-top:11px}
+.exp-progress span{display:block;height:100%;background:linear-gradient(90deg,#6dd5a1,#12a45f);border-radius:99px;transition:width .25s}
+.exp-progress-lbl{font-size:10.5px;color:var(--mut);margin-top:6px;font-weight:700}
+
+/* Grands onglets À payer / Payées */
+.exp-tabs{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.exp-tab{background:#fff;border:1px solid var(--line);border-radius:15px;padding:12px 10px;text-align:center;box-shadow:var(--shadow);color:var(--mut)}
+.exp-tab .tt{font-size:14px;font-weight:850;color:var(--ink);display:flex;align-items:center;justify-content:center;gap:6px}
+.exp-tab .ts{font-size:10.5px;color:var(--mut);margin-top:3px}
+.exp-tab.active{border-color:#bfe6cf;background:#f4fbf7}
+.exp-tab.active .tt{color:var(--gd)}
+.exp-tab.active{box-shadow:0 6px 16px rgba(18,164,95,.12)}
+
+/* Chips filtres + tri */
+.exp-chips{display:flex;gap:7px;overflow:auto;padding:1px 0 3px;scrollbar-width:none}
+.exp-chips::-webkit-scrollbar{display:none}
+.exp-chip{flex:0 0 auto;background:#fff;border:1px solid var(--line);border-radius:999px;padding:7px 12px;font-size:11.5px;font-weight:750;color:#5f6862;display:flex;align-items:center;gap:5px}
+.exp-chip .c{background:#eef2ef;border-radius:999px;padding:1px 6px;font-size:10px;font-weight:800;color:#5f6862}
+.exp-chip.active{background:#eafaf1;border-color:#bfe6cf;color:var(--gd)}
+.exp-chip.active .c{background:#d3f0e0;color:var(--gd)}
+
+/* En-tête de section liste */
+.exp-lhead{display:flex;align-items:center;justify-content:space-between;margin:2px 2px 4px}
+.exp-lhead h2{font-size:14px;margin:0;font-weight:850}
+.exp-sort{border:1px solid var(--line);background:#fff;border-radius:10px;padding:6px 10px;font-size:11px;font-weight:800;color:var(--gd);display:flex;align-items:center;gap:5px}
+
+/* Ligne de dépense */
+.exp-row{display:flex;align-items:center;gap:10px;padding:11px 2px;border-top:1px solid var(--line);position:relative}
+.exp-row:first-child{border-top:0}
+.exp-dotcol{position:relative;width:26px;flex:0 0 26px;align-self:stretch;display:flex;align-items:center;justify-content:center;background:none}
+.exp-dotcol:before{content:"";position:absolute;top:0;bottom:0;left:50%;transform:translateX(-50%);width:2px;background:var(--line)}
+.exp-row:first-child .exp-dotcol:before{top:50%}
+.exp-row:last-child .exp-dotcol:before{bottom:50%}
+.exp-ring{width:16px;height:16px;border-radius:50%;border:3px solid #12a45f;background:var(--card);z-index:1;transition:transform .18s}
+.exp-dotcol:active .exp-ring{transform:scale(.82)}
+.dot-green{border-color:#12a45f}.dot-orange{border-color:#f0932b}.dot-red{border-color:#ef4565}.dot-blue{border-color:#2f6bd6}
+.exp-logo{width:46px;height:46px;flex:0 0 46px;border-radius:13px;font-size:19px;border:1px solid #e1eee7}
+.exp-main{flex:1;min-width:0}
+.exp-main b{display:block;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.exp-main>small{display:block;font-size:11px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.exp-tags{display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap}
+.exp-badge{font-size:10px;font-weight:800;border-radius:999px;padding:2px 8px}
+.b-green{background:#e9f7ef;color:#12844b}.b-orange{background:#fff3e0;color:#b76a00}.b-red{background:#fdecec;color:#d02f45}.b-blue{background:#eaf1ff;color:#2f6bd6}
+.exp-date{font-size:10.5px;color:var(--mut)}
+.exp-ins{display:flex;align-items:center;gap:8px;margin-top:5px}
+.ins-badge{font-size:10px;font-weight:800;color:#2f6bd6;background:#eaf1ff;border-radius:999px;padding:2px 8px}
+.ins-dots{display:flex;gap:3px}
+.ins-dot{width:7px;height:7px;border-radius:50%;background:#dbe6f7}
+.ins-dot.on{background:#2f6bd6}
+.exp-right{text-align:right;flex:0 0 auto;min-width:0}
+.exp-right .exp-amt{display:block;font-size:14px;font-weight:900;white-space:nowrap}
+.exp-right small{font-size:10px;font-weight:700}
+.when-green{color:#12a45f}.when-orange{color:#f0932b}.when-red{color:#ef4565}.when-blue{color:#2f6bd6}
+.exp-chev{color:#c2ccc6;font-size:16px;flex:0 0 auto;margin-left:1px}
+
+/* Ligne payée */
+.exp-row.paid .exp-main b{text-decoration:line-through;text-decoration-thickness:1px;color:#6a746e}
+.exp-row.paid .exp-amt{color:#8a938d;text-decoration:line-through;text-decoration-thickness:1px}
+.exp-row.paid{opacity:.86}
+.exp-done{width:30px;height:30px;flex:0 0 30px;border-radius:50%;background:#12a45f;color:#fff;font-weight:900;font-size:16px;display:grid;place-items:center;transition:transform .18s}
+.exp-done:active{transform:scale(.85)}
+.exp-paidlbl{display:block;font-size:10px;color:#12a45f;font-weight:800;text-align:right;margin-top:2px}
+
+/* Section payées récemment repliable */
+.exp-paidhead{display:flex;align-items:center;justify-content:space-between;width:100%;padding:2px}
+.exp-paidhead .l{display:flex;align-items:center;gap:9px;font-size:14px;font-weight:850}
+.exp-paidhead .l .ic{width:30px;height:30px;border-radius:50%;background:#e9f7ef;color:#12a45f;display:grid;place-items:center;font-size:15px}
+.exp-caret{transition:transform .2s;color:var(--mut)}
+.exp-caret.open{transform:rotate(180deg)}
+
+.exp-voir{display:block;text-align:center;width:100%;margin-top:8px}
+
+/* Toast Annuler */
+.home-toast .undo{margin-left:12px;color:#7fe3ad;font-weight:900;text-decoration:underline}
+
+/* Sélecteur d'identité (emoji) */
+.idp-cur{display:flex;align-items:center;gap:12px;margin:4px 0 8px}
+.idp-cur b{display:block;font-size:15px}.idp-cur small{color:var(--mut);font-size:11.5px}
+.idp-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:6px}
+.idp-emo{aspect-ratio:1/1;border:1px solid var(--line);border-radius:12px;background:#fff;font-size:22px;display:grid;place-items:center}
+.idp-emo.sel{border-color:#12a45f;background:#eafaf1}
+.idp-emo:active{transform:scale(.9)}
+
+/* Options rapides (reporter) */
+.exp-quickopts{display:grid;gap:8px;margin-top:6px}
+.exp-quickopts button{width:100%;text-align:left;border:1px solid var(--line);background:#fff;border-radius:12px;padding:12px;font-weight:750;font-size:13px}
+.exp-quickopts button:active{background:#f3f7f5}
+
+@media(max-width:380px){
+  .exp-sum .m b{font-size:13px}
+  .exp-logo{width:42px;height:42px;flex:0 0 42px;font-size:17px}
+  .exp-add b{display:none}.exp-add{padding:10px 13px}
+}
