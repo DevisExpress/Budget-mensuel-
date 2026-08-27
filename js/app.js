@@ -125,7 +125,17 @@
   function loadGoals() {
     let g = safeParse(localStorage.getItem(KEY_GOALS), []);
     if (!Array.isArray(g)) g = [];
-    g.forEach(x => { if (!x.id) x.id = uid('g'); });
+    g.forEach(x => {
+      if (!x.id) x.id = uid('g');
+      // Champs additifs (non destructifs) — anciens objectifs restent lisibles.
+      if (x.primary == null) x.primary = false;
+      if (x.priority == null) x.priority = 'mid';
+      if (x.archived == null) x.archived = false;
+      if (x.linkedPocketId === undefined) x.linkedPocketId = '';
+      if (x.contribution === undefined) x.contribution = 0;
+      if (x.cat === undefined) x.cat = '';
+      if (x.color === undefined) x.color = '';
+    });
     return g;
   }
 
@@ -179,6 +189,9 @@
   let txQuery = '';         // recherche live
   let txPaidOpen = false;   // section "Payées récemment" repliée par défaut
   let planningRange = 30;
+  let glView = 'list';       // 'list' | 'table'
+  let glSort = 'progress';   // progress | priority | date | amount
+  let glSimContrib = null;   // contribution simulée dans le détail
   let svYear = null;            // année affichée dans Épargne
   let svChartMode = 'month';    // 'month' | 'cumul'
   let anPeriod = 'month';   // month | 3m | 6m | year | 12m | all
@@ -823,8 +836,8 @@
     const ins = homeInsights();
 
     const sv = homeSavingsInfo();
-    const goal = goals[0];
-    const gp = goal && num(goal.target) ? Math.min(100, Math.round((num(goal.current) / num(goal.target)) * 100)) : 0;
+    const goal = primaryGoal();
+    const gp = goal && num(goal.target) ? Math.min(100, Math.round((glCurrent(goal) / num(goal.target)) * 100)) : 0;
     const strat = strategyCalc();
     const bMonths = strat.basculeMonths;
 
@@ -900,7 +913,7 @@
         ${savingsCard}
         ${goal ? `<button class="home-smart gl clickable-card" data-edit-goal="${goal.id}">
           <span class="badge">🎯</span><div class="st" style="color:#2f6bd6">Objectif principal</div><div class="sb">${gp}%</div>
-          <div class="ss">${eur(goal.current)} / ${eur(goal.target)}</div><div class="mini" style="background:#dbe6f7"><span style="width:${gp}%;background:#3f7fe0"></span></div>
+          <div class="ss">${eur(glCurrent(goal))} / ${eur(goal.target)}</div><div class="mini" style="background:#dbe6f7"><span style="width:${gp}%;background:#3f7fe0"></span></div>
         </button>` : `<button class="home-smart gl clickable-card" data-add-goal>
           <span class="badge">🎯</span><div class="st" style="color:#2f6bd6">Objectif principal</div><div class="sb" style="font-size:14px">＋ Définir</div><div class="ss">Crée ton premier objectif</div>
         </button>`}
@@ -1896,24 +1909,225 @@
     return `+${eur(delta)}/mois → ${eur(w.annual)}/an, ${eur(w.fiveYears)} sur 5 ans. Investi au taux actuel (${w.rate}%), cela ferait environ <b>${eur(w.investedFiveYears)}</b> dans 5 ans.`;
   }
 
+  /* =====================================================================
+     MOTEUR OBJECTIFS — lecture des données existantes. Source unique.
+     Si un objectif est lié à une poche, son "actuel" DÉRIVE du solde de la
+     poche (pas de champ dupliqué → zéro double comptage).
+     ===================================================================== */
+  const GL_COLORS = ['#7b5bd6', '#2f6bd6', '#f0932b', '#12a45f', '#e84393', '#16a1a1'];
+  function glLinkedPocket(g) { return g.linkedPocketId ? (extra.pockets || []).find(p => p.id === g.linkedPocketId) : null; }
+  function glCurrent(g) { const p = glLinkedPocket(g); return p ? num(p.balance) : num(g.current); }
+  function glContribution(g) { const p = glLinkedPocket(g); return p ? num(p.monthlyTarget) : num(g.contribution); }
+  function glColor(g, i) { return g.color || GL_COLORS[i % GL_COLORS.length]; }
+  function glRemaining(g) { return Math.max(0, num(g.target) - glCurrent(g)); }
+  function glProgress(g) { return num(g.target) ? (glCurrent(g) / num(g.target)) * 100 : 0; }
+  function glDone(g) { return num(g.target) > 0 && glCurrent(g) >= num(g.target); }
+  function glMonthsToTarget(g) { return g.targetDate ? Math.max(0, monthsBetween(today(), g.targetDate)) : null; }
+  function glNeeded(g) { const mt = glMonthsToTarget(g); return mt != null ? glRemaining(g) / Math.max(1, mt) : null; }
+  function glProjMonths(g, contribOverride) { const c = contribOverride != null ? contribOverride : glContribution(g); return c > 0 ? Math.ceil(glRemaining(g) / c) : null; }
+  function glAddMonths(n) { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() + n); return d; }
+  function glProjDate(g, contribOverride) { const m = glProjMonths(g, contribOverride); return m != null ? glAddMonths(m) : null; }
+  function glStatus(g) {
+    if (glDone(g)) return { key: 'done', label: 'Objectif atteint', cls: 'done' };
+    const c = glContribution(g);
+    if (!g.targetDate) return c > 0 ? { key: 'nodate', label: `≈ ${glProjMonths(g)} mois à ce rythme`, cls: 'nodate' } : { key: 'nocontrib', label: 'Définir une contribution', cls: 'nodate' };
+    if (c <= 0) return { key: 'nocontrib', label: 'Définir une contribution', cls: 'nodate' };
+    const proj = glProjDate(g); const tgt = new Date(g.targetDate + 'T12:00:00');
+    const delta = monthsBetween(iso(proj.getFullYear(), proj.getMonth(), 1), iso(tgt.getFullYear(), tgt.getMonth(), 1)); // >0 si cible après proj = avance
+    if (delta >= 1) return { key: 'ahead', label: `En avance d'environ ${delta} mois`, cls: 'ahead', delta };
+    if (delta <= -1) return { key: 'late', label: `En retard d'environ ${-delta} mois`, cls: 'late', delta };
+    return { key: 'ontime', label: 'À l\'heure', cls: 'ontime', delta: 0 };
+  }
+  /* Suivi mensuel d'un objectif lié : prévu = contribution, réalisé = montant réellement
+     affecté à la poche ce mois-là (m.savings.alloc[pocketId]) — même donnée qu'Épargne. */
+  function glMonthlyTracking(g, y) {
+    const p = glLinkedPocket(g); const rows = [];
+    const rk = svRealKey();
+    for (let m = 0; m < 12; m++) {
+      const k = `${y}-${p2(m + 1)}`; if (k > rk) continue;
+      const sv = budget.monthlyData[k] && budget.monthlyData[k].savings;
+      const planned = glContribution(g);
+      let realized = 0;
+      if (p && sv && sv.paid) realized = (sv.alloc && sv.alloc[p.id] != null) ? num(sv.alloc[p.id]) : 0;
+      rows.push({ key: k, month: m, planned, realized, validated: !!(sv && sv.paid) });
+    }
+    return rows;
+  }
+  function primaryGoal() { const act = goals.filter(g => !g.archived); return act.find(g => g.primary) || act[0] || null; }
+
+  function glSorted() {
+    const act = goals.filter(g => !g.archived);
+    const arr = act.slice();
+    if (glSort === 'progress') arr.sort((a, b) => glProgress(b) - glProgress(a));
+    else if (glSort === 'amount') arr.sort((a, b) => num(b.target) - num(a.target));
+    else if (glSort === 'date') arr.sort((a, b) => (a.targetDate || '9999').localeCompare(b.targetDate || '9999'));
+    else if (glSort === 'priority') { const r = { high: 0, mid: 1, low: 2 }; arr.sort((a, b) => r[a.priority] - r[b.priority]); }
+    // objectif principal toujours en tête
+    arr.sort((a, b) => (b.primary ? 1 : 0) - (a.primary ? 1 : 0));
+    return arr;
+  }
+
   function renderGoals() {
     setTitle('Objectifs', false);
-    const total = goals.reduce((s, g) => s + num(g.current), 0);
-    const target = goals.reduce((s, g) => s + num(g.target), 0);
-    $('#view').innerHTML = `<div class="stack">
-      <div class="sec-head"><button class="link" data-go="plus">‹ Retour</button><button class="link" data-add-goal>＋ Ajouter</button></div>
-      <section class="card">${goals.length ? goals.map(g => {
-        const p = num(g.target) ? Math.min(100, Math.round((num(g.current) / num(g.target)) * 100)) : 0;
-        const needed = goalMonthlyNeeded(g); const left = goalMonthsLeft(g);
-        return `<div class="goal clickable" data-edit-goal="${g.id}">
-          <div class="goal-top"><b>${esc(g.e || '🎯')} ${esc(g.n)}</b><b>${p}%</b></div>
-          <small>${eur(g.current)} / ${eur(g.target)}${g.targetDate ? ' · cible ' + dateLabelLong(g.targetDate) : ''}</small>
-          <div class="progress"><span style="width:${p}%"></span></div>
-          ${needed != null ? `<small class="subtle">Il faut ${eur(needed)}/mois pendant ${left} mois pour l’atteindre à temps.</small>` : ''}
-        </div>`;
-      }).join('') : '<div class="empty">Aucun objectif d’épargne. Appuie sur « + Ajouter » pour créer ton premier objectif.</div>'}</section>
-      <section class="detail-total mint"><small>Total affecté aux objectifs</small><h2 style="margin:4px 0">${eur(total)}</h2><small>${target ? Math.round((total / target) * 100) : 0}% des objectifs cumulés</small></section>
+    const active = goals.filter(g => !g.archived);
+    const archived = goals.filter(g => g.archived);
+    const targetSum = active.reduce((s, g) => s + num(g.target), 0);
+    const currentSum = active.reduce((s, g) => s + glCurrent(g), 0);
+    const doneSum = active.filter(glDone).reduce((s, g) => s + num(g.target), 0);
+    const globalPct = targetSum ? Math.round((currentSum / targetSum) * 100) : 0;
+    const remainSum = Math.max(0, targetSum - currentSum);
+
+    const overview = `<div>
+      <div class="gl-ovh">Vue d'ensemble</div>
+      <div class="gl-ov">
+        <div class="gl-ovc tot"><small>Total objectifs</small><b>${eur(targetSum)}</b><span class="u">${active.length} actif${active.length > 1 ? 's' : ''}</span></div>
+        <div class="gl-ovc done"><small>Déjà atteint</small><b>${eur(currentSum)}</b><span class="u">${globalPct}% du total</span></div>
+        <div class="gl-ovc run"><small>En cours</small><b>${eur(remainSum)}</b><span class="u">${100 - globalPct}% du total</span></div>
+      </div></div>`;
+
+    const sortLabel = { progress: 'Progression', priority: 'Priorité', date: 'Échéance', amount: 'Montant' }[glSort];
+    const tabs = `<div class="gl-tabs">
+      <button class="gl-tab ${glView === 'list' ? 'active' : ''}" data-gl-view="list">Liste</button>
+      <button class="gl-tab ${glView === 'table' ? 'active' : ''}" data-gl-view="table">Tableau</button>
+      <button class="gl-tab gl-sort" data-gl-sort>Trier : ${sortLabel} ⇅</button>
     </div>`;
+
+    let body;
+    if (!active.length) {
+      body = '<section class="card"><div class="empty">Aucun objectif. Appuie sur « + Nouvel objectif » pour créer ton premier projet.</div></section>';
+    } else if (glView === 'list') {
+      body = glSorted().map((g, i) => {
+        const col = glColor(g, goals.indexOf(g)); const pct = Math.round(glProgress(g)); const done = glDone(g);
+        const contrib = glContribution(g);
+        return `<div class="gl-card clickable" data-gl-detail="${g.id}">
+          <div class="gl-emo" style="background:${col}1a">${esc(g.e || '🎯')}</div>
+          <div class="gl-body">
+            <div class="gl-row1"><span class="gl-name">${g.primary ? '<span class="gl-star">★</span> ' : ''}${esc(g.n)}</span>${done ? '<span class="gl-done">✓</span>' : `<span class="gl-pct" style="color:${col}">${pct}%</span>`}</div>
+            ${done ? `<div class="gl-amt"><b>${eur(g.target)}</b> · <span class="gl-done">Objectif atteint !</span></div>` : `<div class="gl-amt"><b>${eur(glCurrent(g))}</b> / ${eur(g.target)}</div>`}
+            <div class="gl-bar"><span style="width:${Math.min(100, pct)}%;background:${col}"></span></div>
+            <div class="gl-row3"><span>${g.targetDate ? 'Échéance : ' + dateLabelLong(g.targetDate).replace(/^\d+ /, '').replace(/(\w)\w* (\d{4})/, (m0, a, b) => m0) : (done ? 'Atteint' : 'Sans date')}</span><span class="contrib">${contrib > 0 ? eur(contrib) + ' /mois' : ''}</span></div>
+          </div></div>`;
+      }).join('');
+    } else {
+      // Tableau + résumé global + donut catégories
+      const rows = glSorted().map((g) => { const col = glColor(g, goals.indexOf(g)); const pct = Math.round(glProgress(g)); const done = glDone(g); return `<div class="gl-trow clickable" data-gl-detail="${g.id}">
+        <span class="te">${esc(g.e || '🎯')}</span><span class="tn">${esc(g.n)}</span>
+        <span class="tc"><b>${eur(glCurrent(g))}</b><small>épargné</small></span>
+        <span class="tc"><b>${eur(glRemaining(g))}</b><small>reste</small></span>
+        <span class="tp" style="color:${done ? 'var(--gl-p4)' : col}">${done ? '✓' : pct + '%'}</span></div>`; }).join('');
+      // Répartition par catégorie (part du montant cible)
+      const catMap = {}; active.forEach((g, i) => { const c = g.cat || g.n; catMap[c] = (catMap[c] || 0) + num(g.target); });
+      const catKeys = Object.keys(catMap).sort((a, b) => catMap[b] - catMap[a]);
+      let acc = 0; const conic = catKeys.map((c, i) => { const p = targetSum ? catMap[c] / targetSum * 100 : 0; const seg = `${GL_COLORS[i % GL_COLORS.length]} ${acc}% ${acc + p}%`; acc += p; return seg; }).join(',');
+      body = `<section class="card gl-tbl">${rows}</section>
+        <div class="gl-ovh" style="margin-top:14px">Résumé global</div>
+        <div class="gl-glob">
+          <div class="gl-globc"><small>Total objectifs</small><b>${eur(targetSum)}</b></div>
+          <div class="gl-globc"><small>Déjà épargné</small><b class="pos">${eur(currentSum)} · ${globalPct}%</b></div>
+          <div class="gl-globc"><small>Reste à épargner</small><b>${eur(remainSum)}</b></div>
+        </div>
+        <section class="card" style="margin-top:12px"><div class="sec-head"><h2>Répartition par catégorie</h2></div>
+          <div class="gl-donut-wrap"><div class="gl-donut" style="background:conic-gradient(${conic || '#e9efeb 0 100%'})"><div class="gl-donut-c"><div><b style="font-size:14px;color:var(--ink)">${active.length}</b><br>objectifs</div></div></div>
+          <div class="gl-legl">${catKeys.slice(0, 6).map((c, i) => `<div class="gl-leg"><i style="background:${GL_COLORS[i % GL_COLORS.length]}"></i><span>${esc(c)}</span><b>${targetSum ? Math.round(catMap[c] / targetSum * 100) : 0}%</b></div>`).join('')}</div></div></section>`;
+    }
+
+    const archivedCard = archived.length ? `<details style="margin-top:6px"><summary class="link" style="cursor:pointer;padding:6px 2px">Objectifs terminés (${archived.length}) ›</summary>
+      <section class="card" style="margin-top:8px">${archived.map(g => `<div class="gl-trow clickable" data-gl-detail="${g.id}"><span class="te">${esc(g.e || '🎯')}</span><span class="tn">${esc(g.n)}</span><span class="tc"><b>${eur(g.target)}</b><small>atteint</small></span><span class="tp pos">✓</span></div>`).join('')}</section></details>` : '';
+
+    $('#view').innerHTML = `<div class="stack gl-page">
+      <p class="gl-sub">Construis tes projets, un pas après l'autre.</p>
+      <div class="sec-head" style="margin:0 2px"><button class="link" data-go="plus">‹ Retour</button><button class="action" style="width:auto;padding:9px 14px" data-add-goal>＋ Nouvel objectif</button></div>
+      ${overview}${tabs}<div>${body}</div>${archivedCard}
+    </div>`;
+  }
+
+  /* Détail objectif (fidèle maquette : montant, ring, reste, contribution, statut,
+     scénarios "Et si ?", graphique projection, infos clés, actions). */
+  function goalDetail(id) {
+    const g = goals.find(x => x.id === id); if (!g) return;
+    const i = goals.indexOf(g); const col = glColor(g, i);
+    const cur = glCurrent(g), tgt = num(g.target), pct = Math.round(glProgress(g)), rem = glRemaining(g);
+    const contrib = glContribution(g); const st = glStatus(g);
+    const mt = glMonthsToTarget(g); const needed = glNeeded(g);
+    const proj = glProjDate(g); const projTxt = proj ? proj.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }) : '—';
+    // ring SVG
+    const R = 30, C = 2 * Math.PI * R, off = C * (1 - Math.min(1, pct / 100));
+    const ring = `<svg class="gl-ring" viewBox="0 0 74 74"><circle cx="37" cy="37" r="${R}" fill="none" stroke="#eef2f0" stroke-width="7"/><circle cx="37" cy="37" r="${R}" fill="none" stroke="${col}" stroke-width="7" stroke-linecap="round" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}" transform="rotate(-90 37 37)"/><text x="37" y="41" text-anchor="middle" font-size="15" font-weight="800" fill="${col}">${pct}%</text></svg>`;
+    // scénarios Et si ?
+    const baseC = contrib > 0 ? contrib : 50;
+    const scn = [baseC, baseC + 25, baseC + 50, baseC + 100].map((c, idx) => {
+      const pm = glProjMonths(g, c); const d = pm != null ? glAddMonths(pm) : null;
+      const baseM = glProjMonths(g, baseC); const delta = (baseM != null && pm != null) ? baseM - pm : null;
+      return `<div class="gl-scn ${idx === 0 ? 'cur' : ''}"><div><b>${eur(c)}/mois</b>${idx === 0 ? ' <small>(actuel)</small>' : ''}</div><div class="date">${d ? d.toLocaleDateString('fr-FR', { month: 'short', year: '2-digit' }) : '—'}</div>${delta && idx > 0 ? `<div class="delta pos">−${delta} mois</div>` : '<div class="delta"></div>'}</div>`;
+    }).join('');
+    // graphique projection
+    const chart = goalProjChart(g, col);
+    // suivi lié
+    const trackRows = glLinkedPocket(g) ? glMonthlyTracking(g, (svYear || year)).filter(r => r.planned > 0) : [];
+    const retard = trackRows.reduce((s, r) => s + Math.max(r.planned - r.realized, 0), 0);
+
+    openSheet('Détail de l\'objectif', `
+      <div class="gl-d-head"><div class="gl-d-emo" style="background:${col}1a">${esc(g.e || '🎯')}</div><div style="flex:1;min-width:0"><b>${g.primary ? '★ ' : ''}${esc(g.n)}</b><small>${g.targetDate ? 'Échéance : ' + dateLabelLong(g.targetDate) + (mt != null ? ` (dans ${mt} mois)` : '') : 'Sans date cible'}</small></div><button class="link" data-edit-goal="${g.id}">Modifier</button></div>
+      <div class="gl-d-main"><div class="gl-d-amt"><b>${eur(cur)}</b> <small>/ ${eur(tgt)}</small><div class="gl-d-rest">${glDone(g) ? '🎉 Objectif atteint' : eur(rem) + ' restants'}</div></div>${ring}</div>
+      <div class="gl-d-bar gl-bar" style="height:8px"><span style="width:${Math.min(100, pct)}%;background:${col}"></span></div>
+      <div style="margin-top:12px"><span class="gl-status gl-st-${st.cls}">${st.cls === 'ahead' ? '⏩' : st.cls === 'late' ? '⚠️' : st.cls === 'done' ? '🎉' : st.cls === 'ontime' ? '✓' : 'ℹ️'} ${st.label}</span></div>
+      <div class="gl-d-3">
+        <div class="k"><small>Contribution</small><b>${contrib > 0 ? eur(contrib) : '—'}</b></div>
+        <div class="k"><small>Pour être à l'heure</small><b>${needed != null ? eur(needed) : '—'}</b></div>
+        <div class="k"><small>Date estimée</small><b>${projTxt}</b></div>
+      </div>
+      ${contrib > 0 && needed != null && needed > contrib + 1 ? `<div class="insight" style="border-left-color:${col}">Il manque environ <b>${eur(needed - contrib)}/mois</b> pour tenir l'échéance.</div>` : ''}
+      <div class="sec-head" style="margin-top:14px"><h2>Et si j'épargnais plus ?</h2></div>${scn}
+      <div class="sec-head" style="margin-top:14px"><h2>Progression de l'objectif</h2></div>
+      <section class="card">${chart}</section>
+      ${trackRows.length ? `<div class="sec-head" style="margin-top:14px"><h2>Suivi mensuel</h2>${retard > 0 ? `<button class="link" data-sv-catchup>Rattraper ›</button>` : ''}</div>
+        <section class="card">${trackRows.map(r => { const imp = r.realized >= r.planned ? '✓' : r.planned > 0 ? '+' + ((r.planned - r.realized) / Math.max(1, glContribution(g))).toFixed(1).replace('.', ',') + ' mois' : '—'; return `<div class="gl-mrow"><span class="mn">${ML[r.month].slice(0, 4)}.</span><span class="mc"><small>Prévu</small>${eur(r.planned)}</span><span class="mc"><small>Réalisé</small>${eur(r.realized)}</span><span class="mi ${r.realized >= r.planned ? 'pos' : 'neg'}">${imp}</span></div>`; }).join('')}</section>` : ''}
+      <div class="sec-head" style="margin-top:14px"><h2>Informations clés</h2></div>
+      <section class="card">
+        ${g.cat ? `<div class="gl-info"><b>Catégorie</b><span>${esc(g.cat)}</span></div>` : ''}
+        <div class="gl-info"><b>Date de création</b><span>${g.createdAt ? dateLabelLong(g.createdAt) : '—'}</span></div>
+        ${glLinkedPocket(g) ? `<div class="gl-info"><b>Poche liée</b><span>${esc(glLinkedPocket(g).emoji)} ${esc(glLinkedPocket(g).name)}</span></div>` : ''}
+        ${g.desc ? `<div class="gl-info"><b>Description</b><span>${esc(g.desc)}</span></div>` : ''}
+      </section>
+      <div class="gl-acts">
+        <button class="ghost" data-gl-primary="${g.id}">${g.primary ? '★ Principal' : 'Définir principal'}</button>
+        ${glDone(g) ? `<button class="ghost" data-gl-archive="${g.id}">${g.archived ? 'Désarchiver' : 'Archiver 🎉'}</button>` : `<button class="ghost" data-edit-goal="${g.id}">Modifier</button>`}
+      </div>`);
+  }
+
+  function goalProjChart(g, col) {
+    const cur = glCurrent(g), tgt = num(g.target), contrib = glContribution(g);
+    const W = 320, H = 150, padL = 30, padR = 8, padT = 10, padB = 20, iw = W - padL - padR, ih = H - padT - padB;
+    const months = contrib > 0 ? Math.min(24, Math.max(3, glProjMonths(g) || 12)) : 12;
+    const pts = []; for (let i = 0; i <= months; i++) pts.push(Math.min(tgt || cur, cur + contrib * i));
+    const maxV = Math.max(tgt || 1, ...pts, 1);
+    const X = i => padL + (i / months) * iw, Y = v => padT + ih - (v / maxV) * ih;
+    let grid = '', ylab = '';
+    for (let gg = 0; gg <= 2; gg++) { const v = maxV * gg / 2, yy = Y(v); grid += `<line class="gl-grid" x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}"/>`; ylab += `<text class="gl-axis" x="2" y="${(yy + 3).toFixed(1)}">${v >= 1000 ? (v / 1000).toFixed(0) + 'k' : Math.round(v)}</text>`; }
+    const path = pts.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(' ');
+    const tgtY = Y(tgt || maxV);
+    const xlab = `<text class="gl-axis" x="${padL}" y="${H - 6}">auj.</text><text class="gl-axis" text-anchor="end" x="${W - padR}" y="${H - 6}">${glProjDate(g) ? glProjDate(g).toLocaleDateString('fr-FR', { month: 'short', year: '2-digit' }) : '+' + months + ' m'}</text>`;
+    return `<svg class="gl-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">${grid}${ylab}<line class="gl-target-line" x1="${padL}" y1="${tgtY.toFixed(1)}" x2="${W - padR}" y2="${tgtY.toFixed(1)}"/><path class="gl-line-proj" d="${path}" style="stroke:${col}"/>${xlab}</svg>`;
+  }
+
+  const GL_EMOJIS = ['🏠', '✈️', '🚗', '🎓', '🎁', '🛟', '💍', '📷', '🛠️', '💻', '🏝️', '🎯'];
+  function goalForm(id = '') {
+    const g = id === '' ? {} : goals.find(x => x.id === id) || {};
+    const curEmoji = g.e || '🎯';
+    openSheet(id === '' ? 'Ajouter un objectif' : 'Modifier l\'objectif', `<form class="form" id="goalForm"><input type="hidden" name="itemId" value="${id}">
+      <label>Icône</label>
+      <div class="gl-emopick">${GL_EMOJIS.map(em => `<button type="button" class="${em === curEmoji ? 'on' : ''}" data-gl-emoji="${em}">${em}</button>`).join('')}</div>
+      <input type="hidden" name="emoji" value="${esc(curEmoji)}">
+      <label>Nom de l'objectif<input name="name" required value="${esc(g.n || '')}" placeholder="Ex : Voyage à New York"></label>
+      <div class="two"><label>Montant cible (€)<input type="number" name="target" step="1" value="${num(g.target) || ''}"></label><label>Déjà épargné (€)<input type="number" name="current" step="1" value="${num(g.current) || ''}" ${g.linkedPocketId ? 'disabled' : ''}></label></div>
+      ${g.linkedPocketId ? '<small class="subtle">Montant actuel dérivé de la poche liée.</small>' : ''}
+      <label>Date cible<input type="date" name="targetDate" value="${g.targetDate || ''}"></label>
+      <label>Contribution mensuelle prévue (€)<input type="number" name="contribution" step="1" value="${num(g.contribution) || ''}" ${g.linkedPocketId ? 'disabled' : ''}></label>
+      <label>Poche d'épargne liée (optionnel)<select name="linkedPocketId"><option value="">— Aucune —</option>${(extra.pockets || []).map(p => `<option value="${p.id}" ${g.linkedPocketId === p.id ? 'selected' : ''}>${esc(p.emoji)} ${esc(p.name)}</option>`).join('')}</select><small class="subtle">Si liée, l'objectif avance automatiquement avec ton épargne validée.</small></label>
+      <label>Catégorie (optionnel)<input name="cat" value="${esc(g.cat || '')}" placeholder="Ex : Voyage"></label>
+      <label>Description (optionnel)<textarea name="desc" rows="2">${esc(g.desc || '')}</textarea></label>
+      <label><input type="checkbox" name="primary" ${g.primary ? 'checked' : ''}> Objectif principal (affiché sur l'Accueil)</label>
+      <button class="action">${id === '' ? 'Créer' : 'Enregistrer'}</button>${id !== '' ? '<button type="button" class="ghost danger" data-delete-goal>Supprimer</button>' : ''}</form>`);
   }
 
   function renderStrategy() {
@@ -2270,16 +2484,6 @@
 
   function birthdayForm(i = '') { const b = i === '' ? {} : extra.birthdays[+i] || {}; openSheet(i === '' ? 'Ajouter un anniversaire' : 'Modifier l’anniversaire', `<form class="form" id="birthdayForm"><input type="hidden" name="idx" value="${i}"><label>Prénom / nom<input name="name" required value="${esc(b.name || '')}"></label><label>Date de naissance<input type="date" name="birthDate" required value="${b.birthDate || ''}"></label><label>Budget cadeau prévu (€)<input type="number" step="0.01" name="budget" value="${num(b.budget) || ''}"></label><label>Rappel<select name="reminder"><option value="7">7 jours avant</option><option value="14" ${b.reminder == 14 ? 'selected' : ''}>14 jours avant</option><option value="30" ${b.reminder == 30 ? 'selected' : ''}>30 jours avant</option></select></label><label>Note<textarea name="note" rows="2">${esc(b.note || '')}</textarea></label><button class="action">Enregistrer</button>${i !== '' ? '<button type="button" class="ghost danger" data-delete-birthday>Supprimer</button>' : ''}</form>`); }
 
-  function goalForm(id = '') {
-    const g = id === '' ? {} : goals.find(x => x.id === id) || {};
-    openSheet(id === '' ? 'Nouvel objectif' : 'Modifier l’objectif', `<form class="form" id="goalForm"><input type="hidden" name="itemId" value="${id}">
-      <label>Nom<input name="name" required value="${esc(g.n || '')}"></label>
-      <label>Icône<input name="emoji" value="${esc(g.e || '🎯')}"></label>
-      <div class="two"><label>Objectif (€)<input type="number" name="target" step="1" value="${num(g.target) || ''}"></label><label>Déjà épargné (€)<input type="number" name="current" step="1" value="${num(g.current) || ''}"></label></div>
-      <label>Date cible<input type="date" name="targetDate" value="${g.targetDate || ''}"></label>
-      <button class="action">Enregistrer</button>${id !== '' ? '<button type="button" class="ghost danger" data-delete-goal>Supprimer</button>' : ''}</form>`);
-  }
-
   function pocketForm(id) {
     const p = extra.pockets.find(x => x.id === id);
     if (!p) return;
@@ -2509,6 +2713,13 @@
     if (e.target.closest('[data-add-tx]')) return txForm();
     if (e.target.closest('[data-add-tx-install]')) return txForm('expense', '', true);
     if (e.target.closest('[data-open-birthday]')) return birthdayForm();
+    const gld = e.target.closest('[data-gl-detail]'); if (gld) return goalDetail(gld.dataset.glDetail);
+    const glv = e.target.closest('[data-gl-view]'); if (glv) { glView = glv.dataset.glView; render(); return; }
+    if (e.target.closest('[data-gl-sort]')) { const order = ['progress', 'priority', 'date', 'amount']; glSort = order[(order.indexOf(glSort) + 1) % order.length]; render(); return; }
+    const glp = e.target.closest('[data-gl-primary]'); if (glp) { const id = glp.dataset.glPrimary; goals.forEach(g => g.primary = (g.id === id) ? !g.primary : false); saveGoals(); closeSheet(); render(); toast('Objectif principal mis à jour'); return; }
+    const gla = e.target.closest('[data-gl-archive]'); if (gla) { const g = goals.find(x => x.id === gla.dataset.glArchive); if (g) { g.archived = !g.archived; saveGoals(); closeSheet(); render(); toast(g.archived ? 'Objectif archivé 🎉' : 'Objectif réactivé'); } return; }
+    const gle = e.target.closest('[data-gl-emoji]'); if (gle) { const f = $('#goalForm'); if (f) { f.querySelector('[name=emoji]').value = gle.dataset.glEmoji; $$('.gl-emopick button').forEach(b => b.classList.toggle('on', b === gle)); } return; }
+
     if (e.target.closest('[data-add-goal]')) return goalForm();
     const svv = e.target.closest('[data-validate-saving]'); if (svv) { const k = svv.dataset.validateSaving; if (svStatus(k).status === 'future') { toast('Mois à venir : pas encore de validation.'); return; } return savingsValidateSheet(k); }
     const svy = e.target.closest('[data-sv-year]'); if (svy) { svYear = (svYear || year) + (+svy.dataset.svYear); render(); return; }
@@ -2629,7 +2840,19 @@
     if (e.target.id === 'goalForm') {
       const id = fd.get('itemId');
       const existing = id ? goals.find(x => x.id === id) : null;
-      const o = { id: id || uid('g'), n: fd.get('name').trim(), e: fd.get('emoji') || '🎯', target: num(fd.get('target')), current: num(fd.get('current')), targetDate: fd.get('targetDate') || '', createdAt: existing?.createdAt || today() };
+      const linkedPocketId = fd.get('linkedPocketId') || '';
+      const o = {
+        id: id || uid('g'), n: fd.get('name').trim(), e: fd.get('emoji') || '🎯',
+        target: num(fd.get('target')),
+        current: linkedPocketId ? (existing ? num(existing.current) : 0) : num(fd.get('current')),
+        targetDate: fd.get('targetDate') || '',
+        contribution: linkedPocketId ? (existing ? num(existing.contribution) : 0) : num(fd.get('contribution')),
+        linkedPocketId, cat: (fd.get('cat') || '').trim(), desc: (fd.get('desc') || '').trim(),
+        primary: fd.get('primary') === 'on',
+        priority: existing?.priority || 'mid', archived: existing?.archived || false, color: existing?.color || '',
+        createdAt: existing?.createdAt || today()
+      };
+      if (o.primary) goals.forEach(g => { if (g.id !== o.id) g.primary = false; });
       if (existing) Object.assign(existing, o); else goals.push(o);
       saveGoals(); closeSheet(); render(); return;
     }
