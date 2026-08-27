@@ -103,6 +103,7 @@
     if (!e || typeof e !== 'object') e = {};
     e.birthdays = Array.isArray(e.birthdays) ? e.birthdays : [];
     e.exchanges = Array.isArray(e.exchanges) ? e.exchanges : [];
+    e.events = Array.isArray(e.events) ? e.events : [];
     e.strategy = e.strategy || { capital: 0, monthly: 300, rate: 7 };
     // Migration additive (non destructive) : horizon de projection et taux des 3 scénarios.
     e.strategy.horizon = num(e.strategy.horizon) || 20;
@@ -176,6 +177,9 @@
   let txQuery = '';         // recherche live
   let txPaidOpen = false;   // section "Payées récemment" repliée par défaut
   let planningRange = 30;
+  let planView = 'day';      // 'day' | 'week' | 'month'
+  let planDay = null;        // jour sélectionné dans le mois affiché
+  let planFilter = 'all';    // all | expense | income | installment | birthday
   let stratPreviewRate = null; // overrides extra.strategy.rate for live "et si" preview only
   let stratMetric = 'capital'; // 'capital' | 'interets' | 'versements' — métrique affichée sur "Évolution de ton capital"
   let stratProjScenario = 'central'; // scénario affiché sur "Projection détaillée"
@@ -1111,51 +1115,201 @@
     toast('Dépense dupliquée');
   }
 
-  function eventsForDay(y, m2, d) {    const ds = iso(y, m2, d), a = [];
-    const mo = `${y}-${p2(m2 + 1)}` === key() ? monthObj() : projectMonth(`${y}-${p2(m2 + 1)}`);
-    (mo.income || []).forEach(r => { if (r.dueDate === ds || (!r.dueDate && d === 1)) a.push('green'); });
-    (mo.expenses || []).forEach(r => { if (r.dueDate === ds) { const tp = r.templateId && (budget.recurringTemplates || []).find(x => x.id === r.templateId); a.push(tp && num(tp.installments) > 0 ? 'orange' : 'red'); } });
-    extra.birthdays.forEach(b => { const n = birthdayNext(b); if (n && n.date === ds) a.push('pink'); });
-    return [...new Set(a)].slice(0, 3);
+  /* ---- Planification : helpers dédiés (source unique — lecture des mêmes données) ---- */
+  function planMonthObj(k) { return k === key() ? monthObj() : projectMonth(k); }
+  function planItemsForISO(ds) {
+    const k = ds.slice(0, 7), cur = k === key(), mo = planMonthObj(k), out = [];
+    (mo.income || []).forEach((r, i) => { const d = r.dueDate || `${k}-01`; if (d === ds) out.push({ kind: 'income', color: 'green', name: r.name, cat: r.cat, amount: num(r.amount), dueDate: ds, sign: '+', idx: cur ? i : -1, paid: r.paid || isAutoIncome(r), ref: r }); });
+    (mo.expenses || []).forEach((r, i) => { if (r.dueDate === ds) { const tpl = templateOf(r); const inst = tpl && num(tpl.installments) > 0; out.push({ kind: 'expense', color: inst ? 'blue' : 'red', name: r.name, cat: r.cat, amount: num(r.amount), dueDate: ds, sign: '-', idx: cur ? i : -1, paid: !!r.paid, install: inst, ref: r }); } });
+    extra.birthdays.forEach((b, i) => { const n = birthdayNext(b); if (n && n.date === ds) out.push({ kind: 'birthday', color: 'pink', name: b.name, cat: 'autres', amount: num(b.budget), dueDate: ds, sign: '', bidx: i, age: n.age }); });
+    (extra.events || []).forEach((ev, i) => { if (ev.date === ds) out.push({ kind: 'event', color: 'pink', name: ev.name, cat: 'autres', amount: num(ev.amount), dueDate: ds, sign: ev.amount ? '-' : '', eidx: i, note: ev.note }); });
+    let list = out;
+    if (planFilter === 'expense') list = out.filter(x => x.kind === 'expense');
+    else if (planFilter === 'income') list = out.filter(x => x.kind === 'income');
+    else if (planFilter === 'installment') list = out.filter(x => x.install);
+    else if (planFilter === 'birthday') list = out.filter(x => x.kind === 'birthday' || x.kind === 'event');
+    // tri : non payé d'abord ; puis retard→proche pour les dépenses
+    return list.sort((a, b) => {
+      const ap = a.paid ? 1 : 0, bp = b.paid ? 1 : 0; if (ap !== bp) return ap - bp;
+      const rank = { income: 0, expense: 1, birthday: 2, event: 3 };
+      return (rank[a.kind] - rank[b.kind]);
+    });
+  }
+  function planColorsForISO(ds) {
+    const set = []; planItemsForISO(ds).forEach(x => { if (!set.includes(x.color)) set.push(x.color); });
+    const order = ['green', 'red', 'blue', 'pink', 'violet']; return order.filter(c => set.includes(c)).slice(0, 4);
+  }
+  function planRow(ev) {
+    const id = (ev.kind === 'expense' || ev.kind === 'income') ? identityOf(ev.ref || { name: ev.name, cat: ev.cat }) : { mark: ev.kind === 'birthday' ? '🎂' : '📌', cls: 'brand-generic' };
+    let badge, bcls;
+    if (ev.kind === 'expense') { const di = dueInfo(ev.ref); badge = ev.paid ? 'Payée' : di.label; bcls = ev.paid ? 'green' : (ev.install ? 'blue' : (expColor(ev.ref) === 'red' ? 'red' : expColor(ev.ref) === 'orange' ? 'orange' : 'green')); }
+    else if (ev.kind === 'income') { badge = ev.paid ? 'Reçu' : 'Attendu'; bcls = 'green'; }
+    else if (ev.kind === 'birthday') { badge = `Anniversaire${ev.age ? ' · ' + ev.age + ' ans' : ''}`; bcls = 'pink'; }
+    else { badge = 'Événement'; bcls = 'pink'; }
+    const tpl = ev.ref ? templateOf(ev.ref) : null;
+    const sub = ev.kind === 'expense' ? `${CATS[ev.cat] || 'Autres'} · ${freqLabel(tpl)}` : ev.kind === 'income' ? 'Revenu' : (ev.note ? esc(ev.note) : 'Événement personnel');
+    const attr = ev.kind === 'expense' && ev.idx >= 0 ? `data-edit-tx="expense" data-index="${ev.idx}"`
+      : ev.kind === 'income' && ev.idx >= 0 ? `data-edit-tx="income" data-index="${ev.idx}"`
+      : ev.bidx != null ? `data-edit-birthday="${ev.bidx}"`
+      : ev.eidx != null ? `data-edit-event="${ev.eidx}"` : '';
+    return `<div class="pl-row ${ev.paid ? 'paid' : ''} ${attr ? 'clickable' : ''}" ${attr}>
+      <div class="pl-railcol"><span class="pl-dot dot-${ev.color}"></span></div>
+      <div class="brandmark pl-logo ${id.cls}">${id.mark}</div>
+      <div class="pl-main"><b>${esc(ev.name || 'Sans libellé')}</b><small>${sub}</small><span class="pl-badge b-${bcls}">${badge}</span></div>
+      <div class="pl-amt when-${ev.color}">${ev.sign}${eur(ev.amount)}</div>
+      <span class="pl-chev">›</span>
+    </div>`;
+  }
+  function planSummary() {
+    const mo = monthObj(), t = totals(mo);
+    const instMonthly = installmentItems().reduce((s, i) => s + num(i.amount), 0);
+    const instCount = installmentItems().length;
+    const engagement = (extra.pockets || []).reduce((s, p) => s + num(p.monthlyTarget), 0);
+    const incCount = (mo.income || []).length, expCount = (mo.expenses || []).length;
+    return { rev: t.tin, dep: t.tex, ech: instMonthly, epg: engagement, incCount, expCount, instCount };
+  }
+  function planStrip(centerDate) {
+    const dow = (centerDate.getDay() + 6) % 7;
+    const monday = new Date(centerDate); monday.setDate(centerDate.getDate() - dow);
+    const todayD = new Date(); const cells = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday); d.setDate(monday.getDate() + i);
+      const ds = iso(d.getFullYear(), d.getMonth(), d.getDate());
+      const inMonth = d.getMonth() === month && d.getFullYear() === year;
+      const sel = d.getDate() === planDay && inMonth;
+      const isToday = d.getFullYear() === todayD.getFullYear() && d.getMonth() === todayD.getMonth() && d.getDate() === todayD.getDate();
+      const dots = planColorsForISO(ds);
+      cells.push(`<button class="pl-day ${sel ? 'sel' : ''} ${isToday ? 'today' : ''} ${inMonth ? '' : 'out'}" data-plan-cursor="${ds}">
+        <span class="wd">${['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'][i]}</span>
+        <span class="dn">${d.getDate()}</span>
+        <span class="pl-daydots">${dots.map(c => `<i class="i-${c}"></i>`).join('')}</span>
+      </button>`);
+    }
+    return `<div class="pl-strip-wrap"><button class="pl-nav" data-plan-shift="-1">‹</button><div class="pl-strip">${cells.join('')}</div><button class="pl-nav" data-plan-shift="1">›</button></div>`;
+  }
+  function planInsights() {
+    const out = [];
+    const soon = projectRange(5).filter(r => !r.isBirthday);
+    if (soon.length >= 3) out.push({ icon: '📌', text: `${soon.length} prélèvements arrivent dans les 5 prochains jours (${eur(soon.reduce((s, r) => s + num(r.amount), 0))}).` });
+    const byDay = {}; projectRange(31).filter(r => !r.isBirthday).forEach(r => { byDay[r.dueDate] = (byDay[r.dueDate] || 0) + 1; });
+    const conc = Object.entries(byDay).filter(([, n]) => n >= 3).sort((a, b) => b[1] - a[1])[0];
+    if (conc) out.push({ icon: '📅', text: `Le ${dateLabel(conc[0])} concentre ${conc[1]} prélèvements.` });
+    try { installmentItems().forEach(i => { if (i.remainingCount === 0 && i.currentIndex === num(i.installments) - 1) out.push({ icon: '✅', text: `Ton échéancier « ${esc(i.name)} » se termine ce mois-ci.` }); }); } catch (_) {}
+    return out.slice(0, 2);
+  }
+  function planEchCards() {
+    const inst = installmentItems();
+    if (!inst.length) return '';
+    return `<section class="card"><div class="sec-head"><h2>Échéanciers en cours</h2><button class="link" data-go="installments">Voir tout ›</button></div>
+      <div class="pl-inst">${inst.map(i => {
+      const pct = Math.round((i.paidCount / num(i.installments)) * 100);
+      const nextK = monthKeyAdd(key(), 1); const nx = `${nextK}-${p2(Math.min(num(i.dueDay) || 1, 28))}`;
+      const br = brandOf(i.name, i.cat);
+      return `<div class="pl-instcard"><div class="top"><div class="brandmark ${br.cls}">${br.mark}</div><div style="min-width:0"><div class="nm">${esc(i.name)}</div><div class="mo">${eur(i.amount)} / mois</div></div></div>
+        <div class="pl-instbar"><span style="width:${pct}%"></span></div>
+        <div class="pl-instfoot"><span>${i.paidCount} / ${i.installments}</span><span>${pct}%</span></div>
+        <div class="pl-instnext">Prochaine : ${i.remainingCount > 0 ? dateLabel(nx) : '— terminé'}</div></div>`;
+    }).join('')}</div></section>`;
   }
 
   function renderPlanning() {
     setTitle('Planification');
-    const first = (new Date(year, month, 1).getDay() + 6) % 7;
-    const days = lastDayOfMonth(year, month);
+    const last = lastDayOfMonth(year, month);
     const todayD = new Date();
-    let cells = '';
-    for (let i = 0; i < first; i++) cells += '<span></span>';
-    for (let d = 1; d <= days; d++) {
-      const ev = eventsForDay(year, month, d);
-      const is = todayD.getFullYear() === year && todayD.getMonth() === month && todayD.getDate() === d;
-      cells += `<div class="day clickable ${is ? 'today' : ''}" data-day="${d}"><b>${d}</b><div class="dots">${ev.map(c => `<i class="dot d-${c}"></i>`).join('')}</div></div>`;
+    if (planDay == null || planDay > last) planDay = (todayD.getFullYear() === year && todayD.getMonth() === month) ? todayD.getDate() : 1;
+    const s = planSummary();
+
+    const toolbar = `<div class="pl-toolbar">
+      <div class="pl-search"><span>⌕</span><span>${ML[month]} ${year}</span></div>
+      <button class="pl-add" data-add-event><span>＋</span><b>Ajouter</b></button>
+    </div>`;
+    const summary = `<section class="card"><div class="pl-sum">
+      <div class="m rev"><small>Revenus</small><b>${eur(s.rev)}</b><span class="u">${s.incCount} op.</span></div>
+      <div class="m dep"><small>Dépenses</small><b>${eur(s.dep)}</b><span class="u">${s.expCount} op.</span></div>
+      <div class="m ech"><small>Échéanciers</small><b>${eur(s.ech)}</b><span class="u">${s.instCount} op.</span></div>
+      <div class="m epg"><small>Épargne prévue</small><b>${eur(s.epg)}</b><span class="u">objectif</span></div>
+    </div></section>`;
+    const seg = `<div class="pl-seg">
+      <button class="${planView === 'day' ? 'active' : ''}" data-plan-view="day">Jour</button>
+      <button class="${planView === 'week' ? 'active' : ''}" data-plan-view="week">Semaine</button>
+      <button class="${planView === 'month' ? 'active' : ''}" data-plan-view="month">Mois</button>
+    </div>`;
+    const chip = (id, label, color) => `<button class="pl-chip ${planFilter === id ? 'active' : ''}" data-plan-filter="${id}">${color ? `<span class="ic i-${color}"></span>` : ''}${label}</button>`;
+    const chips = `<div class="pl-chips">${chip('all', 'Tout')}${chip('expense', 'Dépenses', 'red')}${chip('income', 'Revenus', 'green')}${chip('installment', 'Échéanciers', 'blue')}${chip('birthday', 'Anniversaires', 'pink')}</div>`;
+
+    let body = '';
+    if (planView === 'day') {
+      const center = new Date(year, month, planDay);
+      const ds = iso(year, month, planDay);
+      const items = planItemsForISO(ds);
+      const shown = items.slice(0, 6);
+      const dayLabel = center.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+      body = `${planStrip(center)}
+        <section class="card">
+          <div class="pl-tl-head"><h2>${dayLabel}</h2><button class="pl-today-btn" data-plan-today>◎ Aujourd’hui</button></div>
+          ${shown.length ? shown.map(planRow).join('') : '<div class="empty">Aucun événement ce jour.<br><button class="link" data-add-event style="margin-top:8px">＋ Ajouter un événement</button></div>'}
+          ${items.length > 6 ? `<button class="link pl-voir" data-plan-day-detail="${planDay}">Voir les ${items.length} opérations ›</button>` : ''}
+        </section>
+        ${planEchCards()}`;
+    } else if (planView === 'week') {
+      const center = new Date(year, month, planDay);
+      const dow = (center.getDay() + 6) % 7; const monday = new Date(center); monday.setDate(center.getDate() - dow);
+      let din = 0, dout = 0, groups = '';
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(monday); d.setDate(monday.getDate() + i);
+        const ds = iso(d.getFullYear(), d.getMonth(), d.getDate());
+        const items = planItemsForISO(ds);
+        items.forEach(x => { if (x.sign === '+') din += x.amount; else if (x.sign === '-') dout += x.amount; });
+        if (items.length) groups += `<div class="pl-wday"><div class="pl-wday-h">${d.toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'short' })}</div>${items.map(planRow).join('')}</div>`;
+      }
+      const wkLabel = `${monday.getDate()} – ${new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6).getDate()} ${ML[new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6).getMonth()].toLowerCase()}`;
+      body = `${planStrip(center)}
+        <section class="card"><div class="pl-weeksum">
+          <div class="w in"><small>Entrées</small><b>+${eur(din)}</b></div>
+          <div class="w out"><small>Sorties</small><b>-${eur(dout)}</b></div>
+          <div class="w net"><small>Net prévu</small><b>${din - dout >= 0 ? '+' : ''}${eur(din - dout)}</b></div>
+        </div></section>
+        <section class="card"><div class="pl-tl-head"><h2 style="text-transform:none">Semaine du ${wkLabel}</h2><button class="pl-today-btn" data-plan-today>◎ Aujourd’hui</button></div>
+          ${groups || '<div class="empty">Aucun événement cette semaine.</div>'}</section>`;
+    } else {
+      // MOIS
+      const first = (new Date(year, month, 1).getDay() + 6) % 7;
+      let cells = '';
+      const prevLast = lastDayOfMonth(month === 0 ? year - 1 : year, (month + 11) % 12);
+      for (let i = 0; i < first; i++) cells += `<div class="pl-cell other"><span class="dn">${prevLast - first + i + 1}</span><span class="pl-cd"></span></div>`;
+      for (let d = 1; d <= last; d++) {
+        const ds = iso(year, month, d);
+        const dots = planColorsForISO(ds);
+        const isToday = todayD.getFullYear() === year && todayD.getMonth() === month && todayD.getDate() === d;
+        cells += `<div class="pl-cell clickable ${isToday ? 'today' : ''}" data-day="${d}"><span class="dn">${d}</span><span class="pl-cd">${dots.map(c => `<i class="i-${c}"></i>`).join('')}</span></div>`;
+      }
+      const upcoming = projectRange(31).filter(r => !r.isBirthday && !r.paid).slice(0, 6);
+      body = `<section class="card pl-cal">
+        <div class="cal-head"><button data-plan-shift="-1">‹</button><b>${ML[month]} ${year}</b><button data-plan-shift="1">›</button></div>
+        <div class="pl-grid">${['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'].map(x => `<span class="wk">${x}</span>`).join('')}${cells}</div>
+        <div class="pl-legend"><span><i class="i-green"></i>Revenus</span><span><i class="i-red"></i>Dépenses</span><span><i class="i-blue"></i>Échéanciers</span><span><i class="i-pink"></i>Anniversaires</span></div>
+      </section>
+      ${upcoming.length ? `<section class="card"><div class="sec-head"><h2>À venir ce mois-ci</h2></div>
+        <div class="pl-up">${upcoming.map(r => { const br = identityOf(r); return `<div class="pl-upcard clickable" data-edit-tx="expense" data-index="${(monthObj().expenses || []).indexOf(r)}"><div class="brandmark ${br.cls}">${br.mark}</div><b>${esc(r.name)}</b><small>${dueInfo(r).label}</small><span class="a">-${eur(r.amount)}</span></div>`; }).join('')}</div></section>` : ''}
+      ${planEchCards()}`;
     }
+
+    const ins = planInsights();
+    const insBlock = ins.length ? `<section class="card">${ins.map(i => `<div class="pl-ins"><span class="ic">${i.icon}</span><span>${i.text}</span></div>`).join('')}</section>` : '';
+
+    // Prévisions (horizon financier) — distinct de la navigation calendrier
     const rangeItems = projectRange(planningRange);
-    const rangeTotal = rangeItems.reduce((s, r) => s + num(r.amount), 0);
     const heavy = heavyMonthsAhead();
-    const nextAnnual = annualItems()[0];
+    const annualMonthly = annualItems().reduce((s, a) => s + a.monthly, 0);
+    const prevBlock = `<section class="card"><div class="sec-head"><h2>Prévisions</h2></div>
+      <div class="pl-range">${[[30,'30 j'],[90,'90 j'],[182,'6 mois'],[365,'12 mois']].map(([d,l]) => `<button data-range="${d}" class="${planningRange===d?'active':''}">${l}</button>`).join('')}</div>
+      <div class="metric-grid" style="margin-top:10px"><div class="metric"><small>Total prévu</small><b>${eur(rangeItems.reduce((s,r)=>s+num(r.amount),0))}</b></div><div class="metric"><small>Événements</small><b>${rangeItems.length}</b></div></div>
+      ${heavy.length ? `<div class="insight" style="margin-top:10px" data-plan-goto="${heavy[0].key}"><b>${heavy[0].label} sera un mois chargé</b> : ${eur(heavy[0].planned)} prévus · moyenne ${eur(heavy[0].avg)} (+${heavy[0].pct}%).</div>` : ''}
+      ${annualMonthly > 0 ? `<div class="insight annual-box" style="margin-top:10px">Pour absorber tes dépenses non mensuelles → prévoir <b>${eur(annualMonthly)}/mois</b>.</div>` : ''}
+    </section>`;
 
-    $('#view').innerHTML = `<div class="stack">
-      <div class="tabs range-tabs">${[[30,'30 jours'],[90,'90 jours'],[182,'6 mois'],[365,'12 mois']].map(([d,l]) => `<button data-range="${d}" class="${planningRange===d?'active':''}">${l}</button>`).join('')}</div>
-
-      <section class="card"><div class="sec-head"><h2>Dans les ${planningRange} prochains jours</h2></div>
-        <div class="metric-grid"><div class="metric"><small>Total prévu</small><b>${eur(rangeTotal)}</b></div><div class="metric"><small>Nombre d’événements</small><b>${rangeItems.length}</b></div></div>
-      </section>
-
-      ${heavy.length ? `<section class="card"><div class="sec-head"><h2>Périodes chargées</h2></div>${heavy.map(h => `<div class="row"><div class="row-main"><b>${h.label} sera un mois chargé</b><small>Dépenses prévues : ${eur(h.planned)} · moyenne habituelle ${eur(h.avg)} (+${h.pct}%)</small></div></div>`).join('')}</section>` : ''}
-
-      ${nextAnnual ? `<section class="card"><div class="insight">Pour absorber les dépenses annuelles prévues → prévoir <b>${eur(annualItems().reduce((s,a)=>s+a.monthly,0))}/mois</b>.</section>` : ''}
-
-      <section class="card calendar">
-        <div class="cal-head"><button data-shift="-1">‹</button><b>${ML[month]} ${year}</b><button data-shift="1">›</button></div>
-        <div class="week">${['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'].map(x => `<span>${x}</span>`).join('')}</div>
-        <div class="grid">${cells}</div>
-        <div class="legend"><span><i class="d-green"></i>Revenus</span><span><i class="d-red"></i>Dépenses fixes</span><span><i class="d-orange"></i>Échéances</span><span><i class="d-pink"></i>Anniversaires</span></div>
-      </section>
-
-      <div><div class="sec-head"><h2>Prochains événements</h2></div>
-      <section class="card list">${rangeItems.slice(0, 8).map(r => r.isBirthday ? `<div class="row clickable" data-go="birthdays"><div class="ico">🎂</div><div class="row-main"><b>${esc(r.name)} — Anniversaire</b><small>${dateLabel(r.dueDate)}</small></div><b>${eur(r.amount)}</b></div>` : rowTx(r, 'expense', (budget.monthlyData[r.dueDate.slice(0,7)]?.expenses || []).indexOf(r))).join('') || '<div class="empty">Aucun événement à venir.</div>'}</section></div>
+    $('#view').innerHTML = `<div class="stack pl-page">
+      ${toolbar}${summary}${seg}${chips}${insBlock}${body}${prevBlock}
     </div>`;
   }
 
@@ -1712,10 +1866,28 @@
 
   function dayDetails(d) {
     const ds = iso(year, month, d);
-    const inc = (monthObj().income || []).filter(r => r.dueDate === ds);
-    const exp = (monthObj().expenses || []).filter(r => r.dueDate === ds);
-    const bds = extra.birthdays.filter(b => birthdayNext(b)?.date === ds);
-    openSheet(`${d} ${ML[month]} ${year}`, `<section class="card list">${inc.map(r => rowTx(r, 'income', monthObj().income.indexOf(r))).join('')}${exp.map(r => rowTx(r, 'expense', monthObj().expenses.indexOf(r))).join('')}${bds.map(b => `<div class="row"><div class="ico">🎂</div><div class="row-main"><b>${esc(b.name)}</b><small>Anniversaire</small></div></div>`).join('') || (inc.length || exp.length ? '' : '<div class="empty">Aucun événement ce jour.</div>')}</section>`);
+    const items = planItemsForISO(ds);
+    let din = 0, dout = 0;
+    items.forEach(x => { if (x.sign === '+') din += x.amount; else if (x.sign === '-') dout += x.amount; });
+    const body = `<section class="card">${items.length ? items.map(planRow).join('') : '<div class="empty">Aucun événement ce jour.</div>'}</section>
+      ${items.length ? `<div class="pl-sheet-tot"><span>Total du jour</span><span>${din ? '<b class="in">+' + eur(din) + '</b> ' : ''}${dout ? '<b class="out">-' + eur(dout) + '</b>' : ''}</span></div>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:12px">
+        <button class="ghost" type="button" data-add-tx>＋ Dépense</button>
+        <button class="action" type="button" data-add-event data-date="${ds}">＋ Événement</button>
+      </div>`;
+    openSheet(new Date(year, month, d).toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }), body);
+  }
+
+  function eventForm(i = '') {
+    const ev = i === '' ? {} : (extra.events[+i] || {});
+    openSheet(i === '' ? 'Ajouter un événement' : 'Modifier l’événement', `<form class="form" id="eventForm">
+      <input type="hidden" name="idx" value="${i}">
+      <label>Nom<input name="name" required value="${esc(ev.name || '')}" placeholder="Ex : Contrôle technique"></label>
+      <div class="two"><label>Date<input type="date" name="date" required value="${ev.date || iso(year, month, planDay || 1)}"></label><label>Montant éventuel (€)<input type="number" step="0.01" name="amount" value="${num(ev.amount) || ''}" placeholder="Optionnel"></label></div>
+      <label>Note<textarea name="note" rows="2">${esc(ev.note || '')}</textarea></label>
+      <button class="action">Enregistrer</button>
+      ${i !== '' ? '<button type="button" class="ghost danger" data-delete-event="' + i + '">Supprimer</button>' : ''}
+    </form>`);
   }
 
   function categoryDetail(cat) {
@@ -1879,6 +2051,17 @@
     if (e.target.closest('[data-whatif-remove]')) return whatIfRemoveSheet(e.target.closest('[data-whatif-remove]').dataset.whatifRemove);
     const back = e.target.closest('[data-back-to-tx]'); if (back) return txForm(back.dataset.backToTx, back.dataset.index);
 
+    const pv = e.target.closest('[data-plan-view]'); if (pv) { planView = pv.dataset.planView; render(); return; }
+    const pf = e.target.closest('[data-plan-filter]'); if (pf) { planFilter = pf.dataset.planFilter; render(); return; }
+    if (e.target.closest('[data-plan-today]')) { const t = new Date(); year = t.getFullYear(); month = t.getMonth(); planDay = t.getDate(); saveBudget(); render(); return; }
+    const pc = e.target.closest('[data-plan-cursor]'); if (pc) { const [Y, M, D] = pc.dataset.planCursor.split('-').map(Number); year = Y; month = M - 1; planDay = D; planView = 'day'; saveBudget(); render(); return; }
+    const ps = e.target.closest('[data-plan-shift]'); if (ps) { const dir = +ps.dataset.planShift; if (planView === 'month') { month += dir; if (month < 0) { month = 11; year--; } if (month > 11) { month = 0; year++; } planDay = 1; } else { const step = planView === 'week' ? 7 : 1; const dt = new Date(year, month, (planDay || 1) + dir * step); year = dt.getFullYear(); month = dt.getMonth(); planDay = dt.getDate(); } saveBudget(); render(); return; }
+    const pg = e.target.closest('[data-plan-goto]'); if (pg) { const [Y, M] = pg.dataset.planGoto.split('-').map(Number); year = Y; month = M - 1; planDay = 1; planView = 'month'; saveBudget(); closeSheet(); render(); return; }
+    const pdd = e.target.closest('[data-plan-day-detail]'); if (pdd) return dayDetails(+pdd.dataset.planDayDetail);
+    const aev = e.target.closest('[data-add-event]'); if (aev) { if (aev.dataset.date) { const [Y, M, D] = aev.dataset.date.split('-').map(Number); year = Y; month = M - 1; planDay = D; } return eventForm(); }
+    const eev = e.target.closest('[data-edit-event]'); if (eev) return eventForm(eev.dataset.editEvent);
+    const dev = e.target.closest('[data-delete-event]'); if (dev) { if (confirm('Supprimer cet événement ?')) { extra.events.splice(+dev.dataset.deleteEvent, 1); saveExtra(); closeSheet(); render(); } return; }
+
     const dy = e.target.closest('[data-day]'); if (dy) return dayDetails(+dy.dataset.day);
     const et = e.target.closest('[data-edit-tx]'); if (et) return txForm(et.dataset.editTx, et.dataset.index);
     const eb = e.target.closest('[data-edit-birthday]'); if (eb) return birthdayForm(eb.dataset.editBirthday);
@@ -1934,6 +2117,7 @@
     if (e.target.id === 'txForm') return saveTx(fd);
     if (e.target.id === 'emojiFreeForm') { setExpenseEmoji(fd.get('etype'), fd.get('eidx'), (fd.get('emoji') || '').trim()); return; }
     if (e.target.id === 'reportForm') { reportExpenseTo(fd.get('idx'), fd.get('date')); return; }
+    if (e.target.id === 'eventForm') { const i = fd.get('idx'); const o = { id: (i !== '' && extra.events[+i]?.id) || uid('ev'), name: (fd.get('name') || '').trim(), date: fd.get('date'), amount: num(fd.get('amount')), note: (fd.get('note') || '').trim() }; if (i === '') extra.events.push(o); else extra.events[+i] = o; saveExtra(); closeSheet(); render(); toast('Événement enregistré'); return; }
     if (e.target.id === 'strategyForm') {
       extra.strategy = {
         capital: Math.max(0, num(fd.get('capital'))),
