@@ -177,6 +177,10 @@
   let txQuery = '';         // recherche live
   let txPaidOpen = false;   // section "Payées récemment" repliée par défaut
   let planningRange = 30;
+  let anPeriod = 'month';   // month | 3m | 6m | year | 12m | all
+  let anYear = null;        // année civile sélectionnée pour la vue "Année"
+  let anHidden = {};        // séries masquées dans le graphique
+  let anTip = null;         // index du point survolé/touché
   let planView = 'day';      // 'day' | 'week' | 'month'
   let planDay = null;        // jour sélectionné dans le mois affiché
   let planFilter = 'all';    // all | expense | income | installment | birthday
@@ -1313,79 +1317,321 @@
     </div>`;
   }
 
+  /* =====================================================================
+     MOTEUR D'ANALYSE CENTRALISÉ — lecture seule des vraies données.
+     Réel = payé / reçu / épargne validée. Prévu = montants planifiés.
+     Ne JAMAIS inventer de mois : seuls les mois réellement présents comptent.
+     ===================================================================== */
+  function anFirstKey() {
+    const ks = Object.keys(budget.monthlyData).filter(k => { const m = budget.monthlyData[k]; return (m.income && m.income.length) || (m.expenses && m.expenses.length) || (m.savings && m.savings.paid); }).sort();
+    return ks[0] || key();
+  }
+  function anMonthAgg(k) {
+    const m = budget.monthlyData[k];
+    if (!m) return { key: k, has: false, income: 0, expense: 0, saved: 0, realizedSav: 0, incomePlan: 0, expensePlan: 0, cats: {}, fixed: 0 };
+    const t = totals(m);
+    const realizedSav = (m.savings && m.savings.paid) ? num(m.savings.amount) : 0;
+    const fixed = (m.expenses || []).filter(r => r.paid && (r.recurring || r.templateId)).reduce((s, r) => s + num(r.amount), 0);
+    const has = !!((m.income && m.income.length) || (m.expenses && m.expenses.length) || realizedSav > 0);
+    return { key: k, has, income: t.pin, expense: t.pex, saved: t.pin - t.pex, realizedSav, incomePlan: t.tin, expensePlan: t.tex, cats: catTotals(m, true), fixed };
+  }
+  function anRangeKeys(period) {
+    const selKey = key(); let start, end = selKey;
+    if (period === 'month') start = selKey;
+    else if (period === '3m') start = monthKeyAdd(selKey, -2);
+    else if (period === '6m') start = monthKeyAdd(selKey, -5);
+    else if (period === '12m') start = monthKeyAdd(selKey, -11);
+    else if (period === 'year') { const y = anYear || year; start = `${y}-01`; end = (y === year) ? selKey : `${y}-12`; }
+    else { start = anFirstKey(); end = selKey; } // all
+    const keys = []; let c = start, g = 0; while (c <= end && g < 600) { keys.push(c); c = monthKeyAdd(c, 1); g++; }
+    return { keys, start, end };
+  }
+  function anPrevCats(prevKeys) { const o = {}; prevKeys.map(anMonthAgg).filter(x => x.has).forEach(x => { for (const c in x.cats) o[c] = (o[c] || 0) + x.cats[c]; }); return o; }
+  function analysisEngine(period = anPeriod) {
+    const { keys, start, end } = anRangeKeys(period);
+    const months = keys.map(anMonthAgg);
+    const avail = months.filter(x => x.has);
+    const n = avail.length || 1;
+    const S = f => avail.reduce((s, x) => s + f(x), 0);
+    const incomeReal = S(x => x.income), expenseReal = S(x => x.expense), saved = incomeReal - expenseReal, realizedSav = S(x => x.realizedSav);
+    const incomePlan = S(x => x.incomePlan), expensePlan = S(x => x.expensePlan);
+    const retention = incomeReal > 0 ? (saved / incomeReal) * 100 : 0;
+    const cats = {}; avail.forEach(x => { for (const c in x.cats) cats[c] = (cats[c] || 0) + x.cats[c]; });
+    const averages = { income: incomeReal / n, expense: expenseReal / n, saved: saved / n };
+    const fixed = S(x => x.fixed), fixedAvg = fixed / n, fixedRate = incomeReal > 0 ? (fixed / incomeReal) * 100 : 0;
+    // Période précédente comparable (même longueur, juste avant)
+    const len = keys.length, prevEnd = monthKeyAdd(start, -1), prevKeys = [];
+    let c = monthKeyAdd(prevEnd, -(len - 1)), g = 0; while (c <= prevEnd && g < 600) { prevKeys.push(c); c = monthKeyAdd(c, 1); g++; }
+    const prevAvail = prevKeys.map(anMonthAgg).filter(x => x.has);
+    const pS = f => prevAvail.reduce((s, x) => s + f(x), 0);
+    const prevIncome = pS(x => x.income), prevExpense = pS(x => x.expense), prevSaved = prevIncome - prevExpense;
+    const prev = { income: prevIncome, expense: prevExpense, saved: prevSaved, retention: prevIncome > 0 ? (prevSaved / prevIncome) * 100 : 0, has: prevAvail.length > 0, cats: anPrevCats(prevKeys) };
+    // Meilleur / pire mois
+    let best = null, worst = null, bestRate = null;
+    avail.forEach(x => { if (best == null || x.saved > best.saved) best = x; if (worst == null || x.expense > worst.expense) worst = x; const r = x.income > 0 ? x.saved / x.income : -1; if (bestRate == null || r > (bestRate.income > 0 ? bestRate.saved / bestRate.income : -1)) bestRate = x; });
+    // Non mensuelles (trim/sem/annuelles) + échéanciers
+    const nonMonthly = (budget.recurringTemplates || []).filter(t => t.kind === 'expense' && num(t.installments) === 0 && t.freq !== 'once' && Math.max(1, num(t.interval) || 1) > 1);
+    const nonMonthlyYear = nonMonthly.reduce((s, t) => s + (num(t.amount) * 12) / Math.max(1, num(t.interval) || 1), 0);
+    const subsMonthly = avail.length ? (cats.abonnements || 0) / n : 0;
+    return { period, keys, start, end, months, avail, n: avail.length, incomeReal, expenseReal, saved, realizedSav, incomePlan, expensePlan, retention, cats, averages, fixed, fixedAvg, fixedRate, prev, best, worst, bestRate, firstKey: anFirstKey(), nonMonthlyYear, subsMonthly };
+  }
+  function anDelta(cur, prev, lowerIsBetter) {
+    if (!isFinite(prev) || prev === 0) return null;
+    const pct = Math.round(((cur - prev) / Math.abs(prev)) * 100);
+    if (pct === 0) return { pct: 0, better: null, arrow: '→', cls: 'muted' };
+    const better = lowerIsBetter ? cur < prev : cur > prev;
+    return { pct, better, arrow: cur > prev ? '↑' : '↓', cls: better ? 'pos' : 'neg' };
+  }
+  function anMonthLabel(k, short) { const [y, m] = k.split('-').map(Number); return short ? ML[m - 1].slice(0, 3) : `${ML[m - 1]} ${y}`; }
+
+  /* ---- Graphique SVG (lignes revenus/dépenses/conservé), responsive & tactile ---- */
+  function anLineChart(points) {
+    // points: [{label, income, expense, saved, key}]
+    const W = 320, H = 168, padL = 30, padR = 10, padT = 12, padB = 22;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    const series = [['income', 'an-line-income', 'var(--an-green)'], ['expense', 'an-line-expense', 'var(--an-red)'], ['saved', 'an-line-saved', 'var(--an-blue)']].filter(s => !anHidden[s[0]]);
+    let maxV = 1, minV = 0;
+    points.forEach(p => { ['income', 'expense', 'saved'].forEach(k => { if (!anHidden[k]) { maxV = Math.max(maxV, p[k]); minV = Math.min(minV, p[k]); } }); });
+    const niceMax = Math.ceil(maxV / 500) * 500 || 500; const lo = Math.min(0, minV);
+    const X = i => padL + (points.length <= 1 ? iw / 2 : (i / (points.length - 1)) * iw);
+    const Y = v => padT + ih - ((v - lo) / (niceMax - lo)) * ih;
+    const path = k => points.map((p, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(p[k]).toFixed(1)}`).join(' ');
+    // grille + libellés Y
+    let grid = '', ylab = '';
+    for (let g = 0; g <= 3; g++) { const v = lo + (niceMax - lo) * g / 3; const yy = Y(v); grid += `<line class="an-grid" x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}"/>`; ylab += `<text class="an-axis" x="2" y="${(yy + 3).toFixed(1)}">${v >= 1000 ? (v / 1000).toFixed(v % 1000 ? 1 : 0) + 'k' : Math.round(v)}</text>`; }
+    // libellés X (max ~7)
+    const step = Math.ceil(points.length / 7);
+    const xlab = points.map((p, i) => (i % step === 0 || i === points.length - 1) ? `<text class="an-axis" text-anchor="middle" x="${X(i).toFixed(1)}" y="${H - 6}">${p.label}</text>` : '').join('');
+    const areas = series.map(([k]) => { const col = k === 'income' ? 'var(--an-green)' : k === 'expense' ? 'var(--an-red)' : 'var(--an-blue)'; return `<path class="an-area" fill="${col}" d="${path(k)} L${X(points.length - 1).toFixed(1)} ${(padT + ih).toFixed(1)} L${X(0).toFixed(1)} ${(padT + ih).toFixed(1)} Z"/>`; }).join('');
+    const lines = series.map(([k, cls]) => `<path class="${cls}" d="${path(k)}"/>`).join('');
+    const dots = series.map(([k]) => points.map((p, i) => `<circle class="an-dot" cx="${X(i).toFixed(1)}" cy="${Y(p[k]).toFixed(1)}" r="3" fill="${k === 'income' ? 'var(--an-green)' : k === 'expense' ? 'var(--an-red)' : 'var(--an-blue)'}"/>`).join('')).join('');
+    const hits = points.map((p, i) => `<rect class="an-hit" data-an-pt="${i}" x="${(X(i) - iw / (points.length * 2 || 1)).toFixed(1)}" y="${padT}" width="${(iw / (points.length || 1)).toFixed(1)}" height="${ih}"/>`).join('');
+    let tip = '';
+    if (anTip != null && points[anTip]) {
+      const p = points[anTip]; const leftPct = (X(anTip) / W) * 100;
+      tip = `<div class="an-tip" style="left:${leftPct}%;top:6px">${p.label}${!anHidden.income ? `<br><i style="background:var(--an-green)"></i>Rev. <b>${eur(p.income)}</b>` : ''}${!anHidden.expense ? `<br><i style="background:var(--an-red)"></i>Dép. <b>${eur(p.expense)}</b>` : ''}${!anHidden.saved ? `<br><i style="background:var(--an-blue)"></i>Cons. <b>${eur(p.saved)}</b>` : ''}</div>`;
+    }
+    return `<div class="an-svg-wrap"><svg class="an-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">${grid}${ylab}${areas}${lines}${dots}${xlab}${hits}</svg>${tip}</div>`;
+  }
+
+  function anChartPoints(E) {
+    // Mois actuel → points hebdomadaires ; sinon un point par mois disponible.
+    if (E.period === 'month') {
+      const m = monthObj(); const last = lastDayOfMonth(year, month);
+      const weeks = [[1, 7], [8, 14], [15, 21], [22, last]];
+      return weeks.map((w, i) => {
+        let inc = 0, exp = 0;
+        (m.income || []).forEach(r => { const d = r.dueDate ? +r.dueDate.slice(-2) : 1; if ((r.paid || isAutoIncome(r)) && d >= w[0] && d <= w[1]) inc += num(r.amount); });
+        (m.expenses || []).forEach(r => { const d = r.dueDate ? +r.dueDate.slice(-2) : 1; if (r.paid && d >= w[0] && d <= w[1]) exp += num(r.amount); });
+        return { label: 'S' + (i + 1), income: inc, expense: exp, saved: inc - exp, key: key() };
+      });
+    }
+    const pts = E.months.map(x => ({ label: anMonthLabel(x.key, true), income: x.income, expense: x.expense, saved: x.saved, key: x.key, has: x.has }));
+    return pts.length ? pts : [{ label: anMonthLabel(key(), true), income: 0, expense: 0, saved: 0, key: key() }];
+  }
+
   function renderAnalysis() {
     setTitle('Analyse');
-    const t = totals();
-    const mcur = monthObj();
-    const ct = catTotals(mcur, true);
-    const keys = Object.keys(ct).sort((a, b) => ct[b] - ct[a]);
-    const total = t.pex || 1;
-    let acc = 0; const conic = [];
-    keys.forEach(k => { const p = (ct[k] / total) * 100; conic.push(`${COLORS[k] || '#999'} ${acc}% ${acc + p}%`); acc += p; });
+    const E = analysisEngine(anPeriod);
+    const green = 'var(--an-green)', red = 'var(--an-red)', blue = 'var(--an-blue)';
 
-    const annual = annualItems(); const annualTotal = annual.reduce((s, x) => s + x.annual, 0);
-    const inst = installmentItems(); const instRemain = inst.reduce((s, x) => s + x.remainingAmount, 0);
-    const prevKey = month === 0 ? `${year - 1}-12` : `${year}-${p2(month)}`;
-    const prev = budget.monthlyData[prevKey] ? totals(budget.monthlyData[prevKey]) : { pex: 0, tex: 0, sav: 0 };
-    const prevCat = budget.monthlyData[prevKey] ? catTotals(budget.monthlyData[prevKey], true) : {};
-    const diff = prev.pex ? Math.round(((t.pex - prev.pex) / prev.pex) * 100) : 0;
+    // En-tête période
+    const P = [['month', 'Mois actuel'], ['3m', '3 mois'], ['6m', '6 mois'], ['year', 'Année'], ['12m', '12 mois'], ['all', 'Tout']];
+    const periods = `<div class="an-periods">${P.map(([id, l]) => `<button class="an-per ${anPeriod === id ? 'active' : ''}" data-an-period="${id}">${l}</button>`).join('')}</div>`;
+    const yearsWithData = [...new Set(Object.keys(budget.monthlyData).map(k => +k.slice(0, 4)))].sort();
+    const yNav = (anPeriod === 'year') ? `<div class="an-yearnav"><button data-an-year="-1" ${(anYear || year) <= (yearsWithData[0] || year) ? 'disabled style=opacity:.3' : ''}>‹</button><b>${anYear || year}</b><button data-an-year="1" ${(anYear || year) >= year ? 'disabled style=opacity:.3' : ''}>›</button></div>` : '';
 
-    // Ce qui a changé ce mois-ci (par catégorie)
-    const catDeltas = Object.keys(CATS).map(c => ({ c, delta: num(ct[c]) - num(prevCat[c]) })).filter(x => Math.abs(x.delta) >= 10).sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta)).slice(0, 4);
-    const savDelta = t.sav - prev.sav;
-    const finishedInstallments = installmentItems(prevKey).filter(i => i.remainingCount === 0).filter(i => !installmentItems().some(j => j.id === i.id && j.remainingCount === 0 && j.currentIndex === i.currentIndex));
+    // Libellé de portée
+    let scope;
+    if (anPeriod === 'month') scope = `Mois actuel — ${ML[month]} ${year}`;
+    else if (anPeriod === 'year') scope = `Année ${anYear || year}` + ((anYear || year) === year ? ` — janv. à ${ML[month].toLowerCase()}` : '');
+    else if (anPeriod === 'all') scope = `Depuis le début (${anMonthLabel(E.firstKey)})`;
+    else { const lbl = { '3m': '3 derniers mois', '6m': '6 derniers mois', '12m': '12 derniers mois' }[anPeriod]; scope = `${lbl} — ${anMonthLabel(E.keys[0])} à ${anMonthLabel(E.keys[E.keys.length - 1])}`; }
 
-    const monthlyPaid = [], monthlyPlanned = [];
-    for (let i = 0; i < 12; i++) { const mm = budget.monthlyData[`${year}-${p2(i + 1)}`]; const tt = mm ? totals(mm) : { pex: 0, tex: 0 }; monthlyPaid.push(tt.pex); monthlyPlanned.push(tt.tex); }
-    const mx = Math.max(1, ...monthlyPaid, ...monthlyPlanned);
-    const saveRate = t.pin ? Math.round((t.sav / t.pin) * 100) : 0;
-    const fixed = (mcur.expenses || []).filter(r => r.recurring || r.templateId).reduce((s, r) => s + num(r.amount), 0);
-    const fixedRate = t.pin ? Math.round((fixed / t.pin) * 100) : 0;
-    const paidRate = t.tex ? Math.round((t.pex / t.tex) * 100) : 0;
-    const avgPaid = monthlyPaid.filter(v => v > 0);
-    const avg3 = avgPaid.slice(-3).length ? avgPaid.slice(-3).reduce((a, b) => a + b, 0) / avgPaid.slice(-3).length : 0;
-    const avg6 = avgPaid.slice(-6).length ? avgPaid.slice(-6).reduce((a, b) => a + b, 0) / avgPaid.slice(-6).length : 0;
-    const biggest = keys[0];
+    // Cas zéro donnée
+    if (!E.avail.length) {
+      $('#view').innerHTML = `<div class="stack an-page"><p class="an-sub">Comprendre pour mieux décider.</p>${periods}${yNav}
+        <section class="card"><div class="empty">Pas encore assez de données pour analyser cette période.<br><button class="link" data-page="transactions" style="margin-top:8px">Ajoute tes revenus et dépenses pour commencer ›</button></div></section></div>`;
+      return;
+    }
 
-    $('#view').innerHTML = `<div class="stack">
-      <div class="metric-grid">
-        <div class="metric"><small>Solde actuel réel</small><b class="${t.current >= 0 ? 'pos' : 'neg'}">${eur(t.current)}</b></div>
-        <div class="metric"><small>Fin de mois estimée</small><b class="${t.final >= 0 ? 'pos' : 'neg'}">${eur(t.final)}</b></div>
-        <div class="metric"><small>Déjà prélevé</small><b>${eur(t.pex)} · ${paidRate}%</b></div>
-        <div class="metric"><small>Reste à payer</small><b style="color:var(--orange)">${eur(t.future)}</b></div>
+    // Deltas (sens financier)
+    const dRev = E.prev.has ? anDelta(E.incomeReal, E.prev.income, false) : null;
+    const dDep = E.prev.has ? anDelta(E.expenseReal, E.prev.expense, true) : null;
+    const dCons = E.prev.has ? anDelta(E.saved, E.prev.saved, false) : null;
+    const dRatePts = E.prev.has ? Math.round((E.retention - E.prev.retention) * 10) / 10 : null;
+    const dHtml = (d, extra = '') => d ? `<span class="d ${d.cls}">${d.arrow} ${d.pct > 0 ? '+' : ''}${d.pct}%${extra}</span>` : '';
+
+    // Sur 100 € reçus
+    const depPct = E.incomeReal ? Math.round((E.expenseReal / E.incomeReal) * 100) : 0;
+    const savPct = E.incomeReal ? Math.round((E.realizedSav / E.incomeReal) * 100) : 0;
+    const dispoPct = Math.max(0, 100 - depPct - savPct);
+
+    // Situation
+    const situ = `<section class="card">
+      <div class="an-situ-head"><h2>Ta situation · ${esc(scope)}</h2><span class="i" data-an-help>i</span></div>
+      <div class="an-kpis">
+        <div class="an-kpi rev"><small>Revenus reçus</small><b>${eur(E.incomeReal)}</b>${dHtml(dRev)}</div>
+        <div class="an-kpi dep"><small>Dépenses réelles</small><b>${eur(E.expenseReal)}</b>${dHtml(dDep)}</div>
+        <div class="an-kpi cons"><small>Conservé</small><b>${eur(E.saved)}</b>${dHtml(dCons)}</div>
+        <div class="an-kpi rate"><small>Taux conservation</small><b>${Math.round(E.retention)}%</b>${dRatePts != null && dRatePts !== 0 ? `<span class="d ${dRatePts > 0 ? 'pos' : 'neg'}">${dRatePts > 0 ? '+' : ''}${dRatePts} pts</span>` : ''}</div>
       </div>
+      <div class="an-100"><div class="an-100-bar"><i class="dep" style="width:${depPct}%"></i><i class="sav" style="width:${savPct}%"></i><i class="dispo" style="width:${dispoPct}%"></i></div>
+        <div class="an-100-leg"><span><i style="background:var(--an-red)"></i>Dépenses<b>${depPct} €</b></span><span><i style="background:var(--an-blue)"></i>Épargne<b>${savPct} €</b></span><span><i style="background:#cfe9db"></i>Disponible<b>${dispoPct} €</b></span></div>
+        <div class="an-sub" style="margin-top:6px">Sur 100 € reçus</div>
+      </div></section>`;
 
-      <section class="card"><div class="sec-head"><h2>Répartition réellement prélevée</h2></div>
-        <div class="donut-wrap">
-          <div class="donut clickable" data-donut style="background:conic-gradient(${conic.join(',') || '#e9efeb 0 100%'})"><div class="donut-center"><div><b>${eur(t.pex)}</b><br>Payé</div></div></div>
-          <div class="legend-list">${keys.slice(0, 6).map(k => `<div class="leg clickable" data-cat-detail="${k}"><i style="background:${COLORS[k]}"></i><span>${CATS[k] || k}</span><b>${Math.round((ct[k] / total) * 100)}%</b></div>`).join('')}</div>
-        </div>
-      </section>
+    // Graphique
+    const pts = anChartPoints(E);
+    const legBtn = (k, col, lab) => `<button class="${anHidden[k] ? 'off' : ''}" data-an-toggle="${k}"><i style="background:${col}"></i>${lab}</button>`;
+    const chart = `<section class="card">
+      <div class="an-chart-head"><h2>Évolution ${anPeriod === 'month' ? 'ce mois' : anPeriod === 'year' ? "sur l'année " + (anYear || year) : 'de tes finances'}</h2></div>
+      <div class="an-legend">${legBtn('income', green, 'Revenus')}${legBtn('expense', red, 'Dépenses')}${legBtn('saved', blue, 'Conservé')}</div>
+      ${anLineChart(pts)}
+      ${E.firstKey.slice(0, 7) > E.keys[0] && anPeriod !== 'month' ? `<div class="an-sub" style="margin-top:6px">Données disponibles depuis ${anMonthLabel(E.firstKey)}.</div>` : ''}
+    </section>`;
 
-      <section class="card"><div class="sec-head"><h2>Ce qui a changé ce mois-ci</h2></div>
-        ${catDeltas.length || savDelta ? `${catDeltas.map(d => `<div class="row"><div class="row-main"><b>${CATS[d.c]}</b></div><b class="${d.delta > 0 ? 'neg' : 'pos'}">${d.delta > 0 ? '+' : ''}${eur(d.delta)}</b></div>`).join('')}
-        ${savDelta ? `<div class="row"><div class="row-main"><b>Épargne</b></div><b class="${savDelta >= 0 ? 'pos' : 'neg'}">${savDelta >= 0 ? '+' : ''}${eur(savDelta)}</b></div>` : ''}
-        ${finishedInstallments.map(i => `<div class="row"><div class="row-main"><b>Fin de paiement : ${esc(i.name)}</b></div><b class="pos">+${eur(i.amount)}/mois libérés</b></div>`).join('')}` : '<div class="empty">Rien de notable par rapport au mois précédent.</div>'}
-      </section>
+    // Où part ton argent
+    const catKeys = Object.keys(E.cats).sort((a, b) => E.cats[b] - E.cats[a]);
+    const top = catKeys.slice(0, 5); const othersVal = catKeys.slice(5).reduce((s, c) => s + E.cats[c], 0);
+    const catMax = Math.max(1, ...top.map(c => E.cats[c]), othersVal);
+    const totCat = catKeys.reduce((s, c) => s + E.cats[c], 0) || 1;
+    const catRow = (c, val, color, clickable) => `<div class="an-cat ${clickable ? 'clickable' : ''}" ${clickable ? `data-an-cat="${c}"` : ''}>
+      <span class="dotc" style="background:${color}"></span>
+      <div class="cn"><b>${clickable ? (CATS[c] || c) : 'Autres'}</b><div class="track"><span style="width:${Math.round((val / catMax) * 100)}%;background:${color}"></span></div></div>
+      <div class="cv"><b>${eur(val)}</b><small>${Math.round((val / totCat) * 100)} %</small></div>${clickable ? '<span class="chev">›</span>' : ''}</div>`;
+    const where = `<section class="card"><div class="sec-head"><h2>Où part ton argent ?</h2></div>
+      ${top.map(c => catRow(c, E.cats[c], COLORS[c] || '#5f8aa8', true)).join('')}
+      ${othersVal > 0 ? catRow('autres_group', othersVal, '#c2ccc6', false) : ''}</section>`;
 
-      <section class="card"><div class="sec-head"><h2>Historique réel des prélèvements</h2><b class="${diff > 0 ? 'neg' : 'pos'}">${diff > 0 ? '+' : ''}${diff}%</b></div>
-        <div class="chart">${monthlyPaid.map((v, i) => `<div class="bar ${i === month ? 'active' : ''}" style="height:${Math.max(3, (v / mx) * 100)}%" title="${ML[i]} payé ${eur(v)} / prévu ${eur(monthlyPlanned[i])}"></div>`).join('')}</div>
-        <small style="color:var(--mut)">Moyenne 3 mois : ${eur(avg3)} · Moyenne 6 mois : ${eur(avg6)}</small>
-      </section>
+    // Comparaison période précédente
+    const cmp = E.prev.has ? `<section class="card"><div class="sec-head"><h2>Vs période précédente</h2></div>
+      <div class="an-cmp">
+        <div class="c"><small>Revenus</small><b class="${dRev ? dRev.cls : 'muted'}">${dRev ? (dRev.pct > 0 ? '+' : '') + dRev.pct + '%' : '—'}</b></div>
+        <div class="c"><small>Dépenses</small><b class="${dDep ? dDep.cls : 'muted'}">${dDep ? (dDep.pct > 0 ? '+' : '') + dDep.pct + '%' : '—'}</b></div>
+        <div class="c"><small>Conservé</small><b class="${dCons ? dCons.cls : 'muted'}">${dCons ? (dCons.pct > 0 ? '+' : '') + dCons.pct + '%' : '—'}</b></div>
+        <div class="c"><small>Taux</small><b class="${dRatePts > 0 ? 'pos' : dRatePts < 0 ? 'neg' : 'muted'}">${dRatePts != null ? (dRatePts > 0 ? '+' : '') + dRatePts + ' pts' : '—'}</b></div>
+      </div></section>` : '';
 
-      <div class="metric-grid">
-        <div class="metric"><small>Taux d’épargne</small><b class="pos">${saveRate}%</b></div>
-        <div class="metric"><small>Charges fixes / revenus reçus</small><b>${fixedRate}%</b></div>
-        <div class="metric annual-box clickable" data-go="annual"><small>Coût annuel récurrent</small><b class="blue">${eur(annualTotal)}</b></div>
-        <div class="metric install-box clickable" data-go="installments"><small>Échéanciers restants</small><b style="color:var(--orange)">${eur(instRemain)}</b></div>
-      </div>
+    // Cartes marquantes (multi-mois)
+    const marks = (E.avail.length >= 2 && E.best && E.worst && E.bestRate) ? `<section class="card"><div class="sec-head"><h2>Ce qui a marqué la période</h2></div>
+      <div class="an-marks">
+        <div class="an-mark good clickable" data-an-month="${E.best.key}"><small>Meilleur mois</small><b>${anMonthLabel(E.best.key, true)}</b><div class="v">${eur(E.best.saved)} conservés</div></div>
+        <div class="an-mark bad clickable" data-an-month="${E.worst.key}"><small>Plus coûteux</small><b>${anMonthLabel(E.worst.key, true)}</b><div class="v">${eur(E.worst.expense)} dépensés</div></div>
+        <div class="an-mark blue clickable" data-an-month="${E.bestRate.key}"><small>Meilleur taux</small><b>${anMonthLabel(E.bestRate.key, true)}</b><div class="v">${Math.round(E.bestRate.income > 0 ? E.bestRate.saved / E.bestRate.income * 100 : 0)} %</div></div>
+      </div></section>` : '';
 
-      <section class="card"><div class="sec-head"><h2>Top 5 réellement payées</h2></div>
-        ${(mcur.expenses || []).filter(r => r.paid).slice().sort((a, b) => num(b.amount) - num(a.amount)).slice(0, 5).map(r => `<div class="row clickable" data-edit-tx="expense" data-index="${mcur.expenses.indexOf(r)}"><div class="row-main"><b>${esc(r.name)}</b><small>${CATS[r.cat] || 'Autres'}</small></div><b>${eur(r.amount)}</b></div>`).join('') || '<div class="empty">Aucune dépense cochée comme payée ce mois-ci.</div>'}
-      </section>
+    // Ce qui a changé (max 3) + Budget Orion a détecté (max 3)
+    const changed = anChanges(E).slice(0, 3);
+    const insights = anInsights(E).slice(0, 3);
+    const changedCard = changed.length ? `<section class="card"><div class="sec-head"><h2>Ce qui a changé</h2></div>
+      ${changed.map(c => `<div class="an-ins ${c.dir}" ${c.cat ? `data-an-cat="${c.cat}"` : ''} ${c.cat ? 'style=cursor:pointer' : ''}><span class="ic">${c.icon}</span><span class="tx">${c.text}</span>${c.cat ? '<span class="chev">›</span>' : ''}</div>`).join('')}</section>` : '';
+    const insightsCard = insights.length ? `<section class="card"><div class="sec-head"><h2>Budget Orion a détecté</h2></div>
+      ${insights.map(c => `<div class="an-ins ${c.dir}"><span class="ic">${c.icon}</span><span class="tx">${c.text}</span></div>`).join('')}</section>` : '';
 
-      <div class="insight"><b>Analyse intelligente</b><br>${t.future > t.current ? 'Tes prélèvements restants dépassent ton solde actuel : surveille la fin du mois.' : (biggest ? `Ton poste réellement le plus dépensé est ${CATS[biggest] || biggest} (${eur(ct[biggest])}).` : 'Coche les prélèvements lorsqu’ils passent pour obtenir une analyse réelle de ton mois.')}</div>
+    // Projection fin d'année (année en cours) + fiabilité
+    let projCard = '';
+    if ((anPeriod === 'year' || anPeriod === 'all' || anPeriod === '12m')) {
+      const yr = anYear || year;
+      if ((anYear || year) === year) {
+        if (E.avail.length >= 3) {
+          const elapsed = E.avail.filter(x => x.key.slice(0, 4) == year).length || E.avail.length;
+          const cumThisYear = analysisEngine('year').saved;
+          const rem = Math.max(0, 12 - month - 1);
+          const proj = cumThisYear + E.averages.saved * rem;
+          const goal = 8000;
+          projCard = `<section class="card an-proj"><div class="sec-head"><h2>Projection fin d'année</h2></div>
+            <div class="an-sub">À ce rythme, tu terminerais ${year} avec environ</div>
+            <b class="big">${eur(proj)}</b> <span class="an-sub">conservés</span>
+            <div class="track"><span style="width:${Math.min(100, Math.round(proj / goal * 100))}%"></span></div>
+            <div class="an-sub">Objectif indicatif ${eur(goal)} · ${Math.min(100, Math.round(proj / goal * 100))}% — estimation, pas une certitude.</div></section>`;
+        } else {
+          projCard = `<section class="card an-proj"><div class="sec-head"><h2>Projection fin d'année</h2></div><div class="warn">Historique encore insuffisant pour une projection fiable (au moins 3 mois de données requis).</div></section>`;
+        }
+      }
+    }
+
+    // Charges fixes + abonnements + non mensuelles
+    const extraCards = `<div class="metric-grid">
+      <div class="metric"><small>Charges fixes / revenus</small><b>${Math.round(E.fixedRate)}%</b></div>
+      <div class="metric"><small>Charges fixes / mois</small><b>${eur(E.fixedAvg)}</b></div>
+      <div class="metric clickable" data-an-cat="abonnements"><small>Abonnements / mois</small><b class="blue">${eur(E.subsMonthly)}</b></div>
+      <div class="metric annual-box"><small>Non mensuelles / an</small><b class="blue">${eur(E.nonMonthlyYear)}</b></div>
     </div>`;
+
+    // Moyennes + année jusqu'ici
+    const avgs = `<section class="card"><div class="sec-head"><h2>Moyennes sur la période</h2></div>
+      <div class="an-avgs">
+        <div class="an-avg rev"><small>Revenus moyens</small><b>${eur(E.averages.income)}</b><small>/ mois</small></div>
+        <div class="an-avg dep"><small>Dépenses moyennes</small><b>${eur(E.averages.expense)}</b><small>/ mois</small></div>
+        <div class="an-avg cons"><small>Conservé moyen</small><b>${eur(E.averages.saved)}</b><small>/ mois</small></div>
+      </div></section>`;
+
+    $('#view').innerHTML = `<div class="stack an-page">
+      <p class="an-sub">Comprendre pour mieux décider.</p>
+      ${periods}${yNav}${situ}${chart}${where}${cmp}${marks}${changedCard}${insightsCard}${projCard}${extraCards}${avgs}
+    </div>`;
+  }
+
+  /* Insights fiables (seuils) — "Ce qui a changé" */
+  function anChanges(E) {
+    const out = [];
+    if (E.prev.has) {
+      Object.keys(CATS).forEach(c => {
+        const cur = num(E.cats[c]), prv = num(E.prev.cats[c]);
+        if (prv >= 20 && Math.abs(cur - prv) >= 20) { const pct = Math.round(((cur - prv) / prv) * 100); if (Math.abs(pct) >= 12) out.push({ icon: cur > prv ? '📈' : '📉', dir: cur > prv ? 'up' : 'down', cat: c, text: `Tes dépenses ${CATS[c].toLowerCase()} ont ${cur > prv ? 'augmenté' : 'diminué'} de ${Math.abs(pct)} % (${cur > prv ? '+' : ''}${eur(cur - prv)}).` }); }
+      });
+      const dS = E.saved - E.prev.saved;
+      if (Math.abs(dS) >= 50) out.push({ icon: dS > 0 ? '💙' : '⚠️', dir: dS > 0 ? 'down' : 'up', text: `Tu as conservé ${dS > 0 ? eur(dS) + ' de plus' : eur(-dS) + ' de moins'} que la période précédente.` });
+    }
+    (budget.recurringTemplates || []).length && (() => {
+      try { installmentItems().forEach(i => { if (i.remainingCount === 0 && i.currentIndex === num(i.installments) - 1) out.push({ icon: '✅', dir: 'down', text: `Ton échéancier « ${esc(i.name)} » est terminé : ${eur(i.amount)}/mois libérés.` }); }); } catch (_) {}
+    })();
+    if (E.fixedRate >= 50) out.push({ icon: '🏠', dir: 'info', text: `Tes charges fixes représentent ${Math.round(E.fixedRate)} % de tes revenus reçus.` });
+    return out;
+  }
+  function anInsights(E) {
+    const out = [];
+    if (E.subsMonthly > 0) out.push({ icon: '📺', dir: 'info', text: `Tes abonnements représentent ${eur(E.subsMonthly * 12)} / an (${eur(E.subsMonthly)}/mois).` });
+    if (E.avail.length >= 2 && E.worst) { const avg = E.expenseReal / E.n; if (avg > 0 && E.worst.expense > avg * 1.25) out.push({ icon: '🔺', dir: 'up', text: `${anMonthLabel(E.worst.key, true)} a été ${Math.round(((E.worst.expense - avg) / avg) * 100)} % plus coûteux que ta moyenne.` }); }
+    if (E.prev.has) { const dp = Math.round((E.retention - E.prev.retention) * 10) / 10; if (Math.abs(dp) >= 3) out.push({ icon: dp > 0 ? '📈' : '📉', dir: dp > 0 ? 'down' : 'up', text: `Ton taux de conservation est passé de ${Math.round(E.prev.retention)} % à ${Math.round(E.retention)} %.` }); }
+    if (E.nonMonthlyYear > 0) out.push({ icon: '🗓️', dir: 'info', text: `Tu as ${eur(E.nonMonthlyYear)} de dépenses non mensuelles sur l'année (trimestrielles, annuelles…).` });
+    return out;
+  }
+
+  /* Drill-down catégorie (période courante) → dépenses → fiche */
+  function anCategorySheet(cat) {
+    const E = analysisEngine(anPeriod);
+    const rows = [];
+    E.keys.forEach(k => { const m = budget.monthlyData[k]; if (!m) return; (m.expenses || []).forEach(r => { if ((r.cat || 'autres') === cat && r.paid) rows.push({ r, k, idx: m.expenses.indexOf(r) }); }); });
+    const sum = rows.reduce((s, x) => s + num(x.r.amount), 0);
+    const perMonth = E.n ? sum / E.n : 0;
+    const prevVal = num(E.prev.cats[cat]);
+    const d = E.prev.has && prevVal ? anDelta(E.cats[cat] || 0, prevVal, true) : null;
+    // Regrouper par libellé
+    const byName = {}; rows.forEach(x => { const n = x.r.name || 'Sans nom'; const g = (byName[n] = byName[n] || { sum: 0, sample: x }); g.sum += num(x.r.amount); g.sample = x; /* garder la plus récente (itération chronologique) */ });
+    const names = Object.keys(byName).sort((a, b) => byName[b].sum - byName[a].sum);
+    openSheet(CATS[cat] || cat, `
+      <section class="an-sheet-tot"><small style="color:var(--mut)">Total sur la période</small><br><b>${eur(sum)}</b>
+        <div class="an-sheet-sub"><span>${eur(perMonth)} / mois</span>${d ? `<span class="${d.cls}">${d.arrow} ${d.pct > 0 ? '+' : ''}${d.pct} % vs préc.</span>` : ''}</div></section>
+      <section class="card" style="margin-top:10px">${names.length ? names.map(n => { const x = byName[n].sample; const id = identityOf(x.r); return `<div class="row clickable" data-an-open-exp="${x.k}" data-an-open-idx="${x.idx}"><div class="brandmark ${id.cls}" style="width:34px;height:34px;flex:0 0 34px">${id.mark}</div><div class="row-main"><b>${esc(n)}</b><small>${CATS[cat] || cat} · ${anMonthLabel(x.k, true)}</small></div><b>${eur(byName[n].sum)}</b></div>`; }).join('') : '<div class="empty">Aucune dépense payée dans cette catégorie sur la période.</div>'}</section>`);
+  }
+
+  /* Détail d'un mois (depuis le graphique / cartes marquantes) */
+  function anMonthSheet(k) {
+    const m = budget.monthlyData[k]; if (!m) return;
+    const t = totals(m); const saved = t.pin - t.pex; const rate = t.pin ? Math.round((saved / t.pin) * 1000) / 10 : 0;
+    const ct = catTotals(m, true); const topCat = Object.keys(ct).sort((a, b) => ct[b] - ct[a])[0];
+    const goThisMonth = () => { const [y, mo] = k.split('-').map(Number); year = y; month = mo - 1; };
+    openSheet(anMonthLabel(k), `
+      <div class="an-kpis" style="margin-top:6px">
+        <div class="an-kpi rev"><small>Revenus</small><b>${eur(t.pin)}</b></div>
+        <div class="an-kpi dep"><small>Dépenses</small><b>${eur(t.pex)}</b></div>
+        <div class="an-kpi cons"><small>Conservé</small><b>${eur(saved)}</b></div>
+        <div class="an-kpi rate"><small>Taux</small><b>${rate}%</b></div>
+      </div>
+      <div class="an-sheet-sub" style="margin:12px 2px">Top catégorie : <b>${topCat ? (CATS[topCat] || topCat) + ' (' + eur(ct[topCat]) + ')' : '—'}</b></div>
+      <button class="action" data-an-goto-month="${k}">Voir le détail du mois</button>`);
   }
 
   function renderSavings() {
@@ -2047,6 +2293,16 @@
     if (e.target.closest('[data-open-transfer]')) return transferForm();
     if (e.target.closest('[data-make-backup]')) { snapshotNow('Sauvegarde manuelle', false); render(); return; }
     if (e.target.closest('[data-restore-backup]')) { const id = e.target.closest('[data-restore-backup]').dataset.restoreBackup; if (confirm('Restaurer cette sauvegarde ? Ton état actuel sera lui aussi sauvegardé avant.')) { if (restoreSnapshot(id)) { alert('Sauvegarde restaurée. La page va se recharger.'); location.reload(); } } return; }
+    const anoe = e.target.closest('[data-an-open-exp]'); if (anoe) { const [y, mo] = anoe.dataset.anOpenExp.split('-').map(Number); year = y; month = mo - 1; saveBudget(); return txForm('expense', anoe.dataset.anOpenIdx); }
+    const anp = e.target.closest('[data-an-period]'); if (anp) { anPeriod = anp.dataset.anPeriod; if (anPeriod === 'year' && anYear == null) anYear = year; anTip = null; render(); return; }
+    const any = e.target.closest('[data-an-year]'); if (any) { anYear = (anYear || year) + (+any.dataset.anYear); render(); return; }
+    const ant = e.target.closest('[data-an-toggle]'); if (ant) { const k = ant.dataset.anToggle; anHidden[k] = !anHidden[k]; render(); return; }
+    const anpt = e.target.closest('[data-an-pt]'); if (anpt) { const E = analysisEngine(anPeriod); const pts = anChartPoints(E); const i = +anpt.dataset.anPt; if (anTip === i && pts[i] && pts[i].key && pts[i].has !== false && anPeriod !== 'month') { return anMonthSheet(pts[i].key); } anTip = i; render(); return; }
+    const anc = e.target.closest('[data-an-cat]'); if (anc) return anCategorySheet(anc.dataset.anCat);
+    const anm = e.target.closest('[data-an-month]'); if (anm) return anMonthSheet(anm.dataset.anMonth);
+    const angm = e.target.closest('[data-an-goto-month]'); if (angm) { const [y, mo] = angm.dataset.anGotoMonth.split('-').map(Number); year = y; month = mo - 1; saveBudget(); closeSheet(); page = 'analysis'; render(); return; }
+    if (e.target.closest('[data-an-help]')) return openSheet('Comment lire l\'Analyse', `<div class="insight" style="margin-bottom:10px"><b style="color:var(--an-green)">Revenus</b> = argent réellement reçu (payé/auto).</div><div class="insight" style="margin-bottom:10px"><b style="color:var(--an-red)">Dépenses</b> = argent réellement payé (coché).</div><div class="insight" style="margin-bottom:10px"><b style="color:var(--an-blue)">Conservé</b> = revenus reçus − dépenses payées.</div><div class="insight"><b>Taux de conservation</b> = conservé ÷ revenus reçus. L'analyse utilise le <b>réel</b>, jamais le prévu, et n'invente aucun mois manquant.</div>`);
+
     if (e.target.closest('[data-cat-detail]')) return categoryDetail(e.target.closest('[data-cat-detail]').dataset.catDetail);
     if (e.target.closest('[data-whatif-remove]')) return whatIfRemoveSheet(e.target.closest('[data-whatif-remove]').dataset.whatifRemove);
     const back = e.target.closest('[data-back-to-tx]'); if (back) return txForm(back.dataset.backToTx, back.dataset.index);
