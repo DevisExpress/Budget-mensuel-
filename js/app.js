@@ -117,6 +117,8 @@
       ];
     }
     e.coverageTargetMonths = num(e.coverageTargetMonths) || 6;
+    // Rattrapage d'épargne (temporaire, séparé de l'engagement) — additif, non destructif.
+    e.savingsCatchup = (e.savingsCatchup && typeof e.savingsCatchup === 'object') ? e.savingsCatchup : null;
     return e;
   }
 
@@ -177,6 +179,8 @@
   let txQuery = '';         // recherche live
   let txPaidOpen = false;   // section "Payées récemment" repliée par défaut
   let planningRange = 30;
+  let svYear = null;            // année affichée dans Épargne
+  let svChartMode = 'month';    // 'month' | 'cumul'
   let anPeriod = 'month';   // month | 3m | 6m | year | 12m | all
   let anYear = null;        // année civile sélectionnée pour la vue "Année"
   let anHidden = {};        // séries masquées dans le graphique
@@ -1634,36 +1638,257 @@
       <button class="action" data-an-goto-month="${k}">Voir le détail du mois</button>`);
   }
 
+  /* =====================================================================
+     MOTEUR D'ÉPARGNE CENTRALISÉ — prévu ≠ réalisé. Source unique : m.savings.
+     planned = snapshot d'engagement (additif) sinon engagement live.
+     ===================================================================== */
+  function svBaseEngagement() { return (extra.pockets || []).reduce((s, p) => s + num(p.monthlyTarget), 0); }
+  function svCatchupPerMonth(k) {
+    const c = extra.savingsCatchup; if (!c || !c.months) return 0;
+    // fenêtre [startKey , startKey+months-1]
+    let inWindow = false, cur = c.startKey;
+    for (let i = 0; i < c.months; i++) { if (cur === k) { inWindow = true; break; } cur = monthKeyAdd(cur, 1); }
+    return inWindow ? num(c.perMonth) : 0;
+  }
+  function svPlanned(k) { const sv = budget.monthlyData[k] && budget.monthlyData[k].savings; return (sv && sv.planned != null) ? num(sv.planned) : svBaseEngagement(); }
+  function svRealKey() { const d = new Date(); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}`; }
+  function svStatusRaw(k) {
+    const sv = budget.monthlyData[k] && budget.monthlyData[k].savings;
+    const planned = svPlanned(k), validated = !!(sv && sv.paid), realized = validated ? num(sv.amount) : 0;
+    const rk = svRealKey();
+    if (k > rk) return { status: 'future', planned, realized, validated };
+    if (validated) {
+      if (planned <= 0) return { status: realized > 0 ? 'exceeded' : 'none', planned, realized, validated };
+      if (realized > planned) return { status: 'exceeded', planned, realized, validated };
+      if (realized >= planned) return { status: 'respected', planned, realized, validated };
+      if (realized > 0) return { status: 'partial', planned, realized, validated };
+      return { status: 'missed', planned, realized, validated };
+    }
+    if (k < rk) return { status: planned > 0 ? 'missed' : 'none', planned, realized: 0, validated: false };
+    return { status: 'topay', planned, realized: 0, validated: false }; // mois courant non validé
+  }
+  function svStatus(k) { const r = svStatusRaw(k); r.meta = SV_META[r.status]; return r; }
+  const SV_META = {
+    respected: { sym: '✓', label: 'Respecté', cls: 'respected' }, exceeded: { sym: '★', label: 'Dépassé', cls: 'exceeded' },
+    partial: { sym: '◐', label: 'Partiel', cls: 'partial' }, missed: { sym: '✕', label: 'Manqué', cls: 'missed' },
+    topay: { sym: '○', label: 'À valider', cls: 'topay' }, future: { sym: '', label: 'À venir', cls: 'future' }, none: { sym: '', label: '—', cls: 'none' }
+  };
+  function savingsEngine(y) {
+    const rows = [];
+    for (let m = 0; m < 12; m++) { const k = `${y}-${p2(m + 1)}`; const st = svStatus(k); rows.push({ key: k, month: m, ...st, meta: SV_META[st.status] }); }
+    const evaluable = rows.filter(r => r.planned > 0 && ['respected', 'exceeded', 'partial', 'missed'].includes(r.status));
+    const respected = rows.filter(r => ['respected', 'exceeded'].includes(r.status)).length;
+    const partial = rows.filter(r => r.status === 'partial').length;
+    const missed = rows.filter(r => r.status === 'missed').length;
+    const regularity = evaluable.length ? Math.round((respected / evaluable.length) * 100) : 0;
+    const rk = svRealKey();
+    const applicable = rows.filter(r => r.key <= rk && r.planned > 0);
+    const plannedTotal = applicable.reduce((s, r) => s + r.planned, 0);
+    const realizedTotal = applicable.reduce((s, r) => s + r.realized, 0);
+    const retard = evaluable.reduce((s, r) => s + Math.max(r.planned - r.realized, 0), 0);
+    const avance = evaluable.reduce((s, r) => s + Math.max(r.realized - r.planned, 0), 0);
+    const retardNet = Math.max(0, retard - avance);
+    // série / record (mois évaluables chronologiques)
+    let streak = 0, record = 0, run = 0;
+    evaluable.forEach(r => { if (['respected', 'exceeded'].includes(r.status)) { run++; record = Math.max(record, run); } else run = 0; });
+    for (let i = evaluable.length - 1; i >= 0; i--) { if (['respected', 'exceeded'].includes(evaluable[i].status)) streak++; else break; }
+    return { y, rows, evaluable, respected, partial, missed, regularity, plannedTotal, realizedTotal, ecart: realizedTotal - plannedTotal, retard, avance, retardNet, streak, record };
+  }
+  function svImpactYears(amount, years) {
+    const rate = num(extra.strategy && extra.strategy.rate) || 7;
+    return projectCapital(years, amount, 0, rate); // valeur future théorique d'un capital ponctuel
+  }
+  /* Réconciliation poche (idempotente) : évite tout double comptage à la re-validation. */
+  function svApplyAllocation(k, newAlloc) {
+    const sv = budget.monthlyData[k].savings; const old = (sv && sv.alloc) || {};
+    for (const pid in old) { const p = (extra.pockets || []).find(x => x.id === pid); if (p) p.balance = num(p.balance) - num(old[pid]); }
+    for (const pid in newAlloc) { const p = (extra.pockets || []).find(x => x.id === pid); if (p) p.balance = num(p.balance) + num(newAlloc[pid]); }
+    saveExtra();
+  }
+
   function renderSavings() {
     setTitle('Épargne');
-    const t = totals();
-    const rate = t.pin ? Math.round((t.sav / t.pin) * 100) : 0;
+    if (svYear == null) svYear = year;
+    const E = savingsEngine(svYear);
+    const pTotal = pocketsTotal();
     const cov = coverageMonths();
     const covPct = Math.min(100, (cov / Math.max(1, extra.coverageTargetMonths)) * 100);
-    const pTotal = pocketsTotal();
+    const curKey = key();
+    const curSt = svStatus(curKey);
+    const engagementLive = svBaseEngagement();
+    const catchup = svCatchupPerMonth(curKey);
+    const target = engagementLive + catchup;
+    // Δ épargne totale ce mois (réalisé validé du mois courant)
+    const monthRealized = curSt.validated ? curSt.realized : 0;
 
-    $('#view').innerHTML = `<div class="stack">
-      <section class="card savings-hero clickable" data-edit-month-saving>
-        <div><small>Épargne enregistrée pour ${ML[month].toLowerCase()}</small><h2 class="pos" style="margin:6px 0">${eur(t.sav)}</h2><small>${rate}% des revenus reçus · <b class="pos">Modifier ›</b></small></div>
-        <div class="pig">🐷</div>
-      </section>
+    // Poches
+    const pocketsHtml = (extra.pockets || []).map(p => {
+      const goal = num(p.goal) || 0; const pct = goal ? Math.min(100, Math.round((num(p.balance) / goal) * 100)) : (pTotal ? Math.round((num(p.balance) / pTotal) * 100) : 0);
+      return `<div class="sv-pocket clickable" data-edit-pocket="${p.id}">
+        <div class="pemo">${esc(p.emoji || '💶')}</div>
+        <div class="pmain"><b>${esc(p.name)}${p.security ? ' 🛡️' : ''}</b><span class="amt">${eur(p.balance)}${goal ? ' / ' + eur(goal) : ''}${p.monthlyTarget ? ' · ' + eur(p.monthlyTarget) + '/mois' : ''}</span><div class="track"><span style="width:${pct}%"></span></div></div>
+        <span class="pct">${pct}%</span></div>`;
+    }).join('');
 
-      <section class="card"><div class="sec-head"><h2>Couverture financière</h2><button class="link" data-edit-coverage-target>Objectif : ${extra.coverageTargetMonths} mois</button></div>
-        <div class="strategy-number" style="font-size:22px">${cov.toFixed(1).replace('.', ',')} mois couverts</div>
-        <div class="strategy-track" style="margin-top:8px"><span style="width:${covPct}%"></span></div>
-        <small class="subtle">Épargne de sécurité (${eur(securityPocket()?.balance)}) ÷ dépenses essentielles mensuelles (${eur(essentialMonthlyExpenses())}).</small>
-      </section>
+    // Validation du mois
+    const cm = curSt.meta;
+    const validCard = `<section class="card sv-valid">
+      <div class="sv-valid-head"><h2>Épargne du mois de ${ML[month].toLowerCase()}</h2><span class="sv-status sv-st-${cm.cls}">${cm.sym} ${cm.label}</span></div>
+      <div class="sv-valid-grid">
+        <div class="sv-vk plan"><small>Engagement${catchup ? ' (+ rattrapage)' : ''}</small><b>${eur(target)}</b></div>
+        <div class="sv-vk real"><small>Réalisé</small><b>${curSt.validated ? eur(curSt.realized) : '—'}</b></div>
+      </div>
+      <button class="action" data-validate-saving="${curKey}">${curSt.validated ? 'Modifier ma validation' : 'Valider mon épargne'}</button>
+    </section>`;
 
-      <div><div class="sec-head"><h2>Poches d’épargne</h2><button class="link" data-add-pocket>＋ Nouvelle poche</button></div>
-      <section class="card">${extra.pockets.map(p => { const pct = pTotal ? Math.round((num(p.balance) / pTotal) * 100) : 0; return `<div class="goal clickable" data-edit-pocket="${p.id}"><div class="goal-top"><b>${esc(p.emoji || '💶')} ${esc(p.name)}${p.security ? ' <span class="freq-badge">Sécurité</span>' : ''}</b><b>${eur(p.balance)}</b></div><small>${pct}% de l’épargne disponible ${p.monthlyTarget ? '· ' + eur(p.monthlyTarget) + '/mois' : ''} · Toucher pour gérer</small><div class="progress"><span style="width:${pct}%"></span></div></div>`; }).join('')}</section></div>
+    // Respect des engagements (timeline)
+    const yearsWithData = [...new Set(Object.keys(budget.monthlyData).map(k => +k.slice(0, 4)))].sort();
+    const minY = yearsWithData[0] || year;
+    const timeline = `<section class="card">
+      <div class="sv-reg-head"><h2 style="font-size:15px;margin:0;font-weight:850">Respect de mes engagements</h2>
+        <div class="sv-reg-year"><button data-sv-year="-1" ${svYear <= minY ? 'disabled style=opacity:.3' : ''}>‹</button><b>${svYear}</b><button data-sv-year="1" ${svYear >= year ? 'disabled style=opacity:.3' : ''}>›</button></div></div>
+      <div class="sv-months">${E.rows.map(r => `<button class="sv-mo ${r.key === curKey ? 'sel' : ''}" data-validate-saving="${r.key}"><span class="l">${['J','F','M','A','M','J','J','A','S','O','N','D'][r.month]}</span><span class="s s-${r.meta.cls}">${r.meta.sym}</span></button>`).join('')}</div>
+      <div class="sv-reg-counts">
+        <div class="sv-rc g"><small>Respectés</small><b>${E.respected}${E.evaluable.length ? ' / ' + E.evaluable.length : ''}</b></div>
+        <div class="sv-rc o"><small>Partiels</small><b>${E.partial}</b></div>
+        <div class="sv-rc r"><small>Manqués</small><b>${E.missed}</b></div>
+      </div>
+      <div class="sv-legend"><span><i class="s-respected"></i>Respecté</span><span><i class="s-partial"></i>Partiel</span><span><i class="s-missed"></i>Manqué</span><span><i class="s-topay" style="background:#fff;border:1.5px solid var(--sv-orange)"></i>À valider</span></div>
+      ${E.evaluable.length ? `<button class="link" data-sv-regularity style="display:block;text-align:center;width:100%;margin-top:10px">Voir le tableau détaillé ›</button>` : ''}
+      ${E.streak >= 2 ? `<div class="insight" style="margin-top:8px">🔥 Série en cours : <b>${E.streak} mois</b> consécutifs respectés${E.record > E.streak ? ` · record ${E.record}` : ''}.</div>` : ''}
+    </section>`;
 
-      <section class="detail-total mint"><small>Épargne disponible (toutes poches)</small><h2 style="margin:4px 0">${eur(pTotal)}</h2><button class="link" data-open-transfer>⇄ Transférer entre poches</button></section>
+    // Retard / Avance
+    let delayCard = '';
+    if (E.retardNet > 0) {
+      delayCard = `<section class="card"><div class="sv-delay late clickable" data-sv-catchup>
+        <div class="ic">⚠️</div><div class="dm"><small>Retard d'épargne cumulé</small><b>${eur(E.retardNet)}</b><small>${E.missed} mois manqué${E.missed > 1 ? 's' : ''} · touche pour rattraper</small></div><span class="go link">Rattraper ›</span></div></section>`;
+    } else if (E.avance > 0) {
+      const moisEng = engagementLive > 0 ? (E.avance / engagementLive) : 0;
+      delayCard = `<section class="card"><div class="sv-delay ahead">
+        <div class="ic">🎉</div><div class="dm"><small>Avance d'épargne</small><b>+${eur(E.avance)}</b><small>${moisEng >= 0.5 ? '≈ ' + moisEng.toFixed(1).replace('.', ',') + ' mois d\'engagement' : 'au-dessus de ton engagement'}</small></div></div></section>`;
+    }
 
-      <section class="card"><div class="sec-head"><h2>Et si j’épargnais plus ?</h2></div>
-        <div class="two"><label>Effort supplémentaire<input type="number" id="whatifSavingsInput" min="0" step="10" value="50"></label><div></div></div>
-        <div id="whatifSavingsResult" class="insight" style="margin-top:8px">${whatIfSavingsText(50)}</div>
-      </section>
+    // Cumul annuel
+    const cumulCard = `<section class="card"><div class="sec-head"><h2>Cette année ${svYear}</h2></div>
+      <div class="metric-grid">
+        <div class="metric"><small>Prévu cumulé</small><b>${eur(E.plannedTotal)}</b></div>
+        <div class="metric"><small>Réalisé cumulé</small><b class="pos">${eur(E.realizedTotal)}</b></div>
+        <div class="metric"><small>Écart</small><b class="${E.ecart >= 0 ? 'pos' : 'neg'}">${E.ecart >= 0 ? '+' : ''}${eur(E.ecart)}</b></div>
+        <div class="metric"><small>Régularité</small><b>${E.regularity}%</b></div>
+      </div></section>`;
+
+    // Graphique prévu vs réalisé
+    const chartCard = `<section class="card">
+      <div class="sv-chart-head"><h2>Prévu vs réalisé</h2><div class="sv-modes"><button class="${svChartMode === 'month' ? 'active' : ''}" data-sv-mode="month">Mensuel</button><button class="${svChartMode === 'cumul' ? 'active' : ''}" data-sv-mode="cumul">Cumulé</button></div></div>
+      <div class="sv-legend2"><span><i class="sv-bar-plan" style="background:#d7e0da"></i>Prévu</span><span><i class="sv-bar-real" style="background:var(--sv-green)"></i>Réalisé</span></div>
+      ${svChart(E)}</section>`;
+
+    // Insights (max 3)
+    const insights = svInsights(E).slice(0, 3);
+    const insightsCard = insights.length ? `<section class="card">${insights.map(i => `<div class="sv-ins ${i.level}" ${i.attr || ''} ${i.attr ? 'style=cursor:pointer' : ''}><span class="ic">${i.icon}</span><span class="tx">${i.text}</span>${i.attr ? '<span class="chev">›</span>' : ''}</div>`).join('')}</section>` : '';
+
+    $('#view').innerHTML = `<div class="stack sv-page">
+      <p class="sv-sub">Construis ton avenir, un pas après l'autre.</p>
+      <div class="sv-heros">
+        <div class="sv-hero-a clickable" data-open-transfer><small>Épargne totale</small><b>${eur(pTotal)}</b><span class="up">${monthRealized > 0 ? '+' + eur(monthRealized) + ' ce mois' : 'toutes poches'}</span></div>
+        <div class="sv-hero-b clickable" data-edit-coverage-target><small>Couverture financière</small><b>${cov.toFixed(1).replace('.', ',')} mois</b><span style="font-size:10.5px;color:var(--mut)">Dépenses essentielles</span><div class="track"><span style="width:${covPct}%"></span></div></div>
+      </div>
+      ${validCard}
+      <div><div class="sec-head"><h2>Mes poches d'épargne</h2><button class="link" data-add-pocket>Gérer ›</button></div>
+      <section class="card">${pocketsHtml || '<div class="empty">Aucune poche. Ajoute-en une pour commencer.</div>'}</section></div>
+      ${timeline}
+      ${delayCard}
+      ${cumulCard}
+      ${chartCard}
+      ${insightsCard}
     </div>`;
+  }
+
+  /* Graphique SVG prévu/réalisé (mensuel groupé ou cumulé) */
+  function svChart(E) {
+    const rk = svRealKey();
+    const rows = E.rows.filter(r => r.key <= rk); // pas de futur
+    if (!rows.length) return '<div class="empty">Pas encore de données cette année.</div>';
+    const W = 320, H = 150, padL = 28, padR = 8, padT = 10, padB = 20, iw = W - padL - padR, ih = H - padT - padB;
+    const X = i => padL + (rows.length <= 1 ? iw / 2 : (i / (rows.length - 1)) * iw);
+    let grid = '', ylab = '';
+    if (svChartMode === 'month') {
+      const maxV = Math.max(1, ...rows.map(r => Math.max(r.planned, r.realized)));
+      const nice = Math.ceil(maxV / 100) * 100 || 100;
+      const Y = v => padT + ih - (v / nice) * ih;
+      for (let g = 0; g <= 2; g++) { const v = nice * g / 2, yy = Y(v); grid += `<line class="sv-grid" x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}"/>`; ylab += `<text class="sv-axis" x="2" y="${(yy + 3).toFixed(1)}">${v >= 1000 ? (v / 1000).toFixed(0) + 'k' : Math.round(v)}</text>`; }
+      const bw = Math.min(9, iw / (rows.length * 2.6));
+      const bars = rows.map((r, i) => { const x = X(i); const yp = Y(r.planned), yr = Y(r.realized); return `<rect class="sv-bar-plan" x="${(x - bw - 1).toFixed(1)}" y="${yp.toFixed(1)}" width="${bw.toFixed(1)}" height="${(padT + ih - yp).toFixed(1)}" rx="2"/><rect class="sv-bar-real" x="${(x + 1).toFixed(1)}" y="${yr.toFixed(1)}" width="${bw.toFixed(1)}" height="${(padT + ih - yr).toFixed(1)}" rx="2"/>`; }).join('');
+      const xlab = rows.map((r, i) => `<text class="sv-axis" text-anchor="middle" x="${X(i).toFixed(1)}" y="${H - 6}">${['J','F','M','A','M','J','J','A','S','O','N','D'][r.month]}</text>`).join('');
+      const hits = rows.map((r, i) => `<rect fill="transparent" data-sv-mo="${r.key}" x="${(X(i) - iw / (rows.length * 2 || 1)).toFixed(1)}" y="${padT}" width="${(iw / (rows.length || 1)).toFixed(1)}" height="${ih}"/>`).join('');
+      return `<svg class="sv-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">${grid}${ylab}${bars}${xlab}${hits}</svg>`;
+    }
+    // cumulé
+    let cp = 0, cr = 0; const P = rows.map(r => (cp += r.planned)), Rr = rows.map(r => (cr += r.realized));
+    const maxV = Math.max(1, ...P, ...Rr); const nice = Math.ceil(maxV / 200) * 200 || 200;
+    const Y = v => padT + ih - (v / nice) * ih;
+    for (let g = 0; g <= 2; g++) { const v = nice * g / 2, yy = Y(v); grid += `<line class="sv-grid" x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}"/>`; ylab += `<text class="sv-axis" x="2" y="${(yy + 3).toFixed(1)}">${v >= 1000 ? (v / 1000).toFixed(1) + 'k' : Math.round(v)}</text>`; }
+    const pathP = P.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(' ');
+    const pathR = Rr.map((v, i) => `${i ? 'L' : 'M'}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(' ');
+    const xlab = rows.map((r, i) => `<text class="sv-axis" text-anchor="middle" x="${X(i).toFixed(1)}" y="${H - 6}">${['J','F','M','A','M','J','J','A','S','O','N','D'][r.month]}</text>`).join('');
+    return `<svg class="sv-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">${grid}${ylab}<path class="sv-line-plan" d="${pathP}"/><path class="sv-line-real" d="${pathR}"/>${xlab}</svg>`;
+  }
+
+  function svInsights(E) {
+    const out = [];
+    if (svStatus(key()).status === 'topay' && svBaseEngagement() > 0) out.push({ icon: '🐷', level: 'action', text: `Pense à valider ton épargne de ${ML[month].toLowerCase()} (engagement ${eur(svBaseEngagement())}).`, attr: `data-validate-saving="${key()}"` });
+    if (E.streak >= 3) out.push({ icon: '🔥', level: 'good', text: `Tu respectes ton engagement depuis ${E.streak} mois. Continue !` });
+    if (E.retardNet > 0) { const eng = svBaseEngagement(); out.push({ icon: '↩️', level: 'action', text: eng > 0 && E.retardNet < eng ? `Tu as ${eur(E.retardNet)} de retard, soit moins d'un mois d'engagement.` : `En ajoutant ${eur(Math.ceil(E.retardNet / 3))}/mois pendant 3 mois, ton retard serait absorbé.`, attr: 'data-sv-catchup' }); }
+    if (E.avance > 0) out.push({ icon: '⭐', level: 'good', text: `Tu as épargné ${eur(E.avance)} de plus que prévu cette année.` });
+    const impact = E.retardNet > 0 ? svImpactYears(E.retardNet, 10) : 0;
+    if (impact > E.retardNet) out.push({ icon: '📉', level: 'action', text: `Projection théorique : ces ${eur(E.retardNet)} non épargnés représenteraient ~${eur(impact)} dans 10 ans (au taux ${num(extra.strategy?.rate) || 7}%).` });
+    return out;
+  }
+
+  /* Bottom-sheet de validation mensuelle (prévu / réalisé / partiel / rien) */
+  function savingsValidateSheet(k) {
+    const [y, mo] = k.split('-').map(Number); const label = `${ML[mo - 1]} ${y}`;
+    const m = budget.monthlyData[k] || { savings: { amount: 0, paid: false } };
+    const sv = m.savings || { amount: 0, paid: false };
+    const planned = svPlanned(k) + svCatchupPerMonth(k);
+    const cur = sv.paid ? num(sv.amount) : '';
+    const st = svStatus(k);
+    openSheet(`Validation — ${label}`, `<form class="form" id="savingsValidateForm">
+      <input type="hidden" name="key" value="${k}">
+      <div class="metric-grid" style="margin-bottom:4px"><div class="metric"><small>Engagement</small><b>${eur(planned)}</b></div><div class="metric"><small>Statut actuel</small><b class="sv-status sv-st-${st.meta.cls}" style="font-size:12px">${st.meta.sym} ${st.meta.label}</b></div></div>
+      <label>Combien as-tu réellement épargné ?<input type="number" min="0" step="0.01" name="amount" value="${cur}" placeholder="Ex : ${Math.round(planned) || 200}"></label>
+      <div class="sv-quick">${[planned, planned * 0.75, planned * 0.5, 0].map(v => `<button type="button" data-sv-quick="${Math.round(v)}">${Math.round(v)} €</button>`).join('')}</div>
+      <label>Vers quelle poche ? (optionnel)<select name="pocket"><option value="">— Ne pas affecter —</option>${(extra.pockets || []).map(p => `<option value="${p.id}" ${(sv.alloc && sv.alloc[p.id]) ? 'selected' : ''}>${esc(p.emoji)} ${esc(p.name)}</option>`).join('')}</select></label>
+      <label>Date de validation<input type="date" name="date" value="${sv.date || today()}"></label>
+      <button class="action" name="act" value="save">Valider ce mois</button>
+      ${sv.paid ? '<button type="button" class="ghost danger" data-cancel-validation="' + k + '">Annuler la validation</button>' : '<button type="button" class="ghost" data-sv-nothing="' + k + '">Pas ce mois-ci (0 €)</button>'}
+    </form>`);
+  }
+
+  /* Tableau de régularité (lignes compactes — jamais un tableau desktop) */
+  function savingsRegularitySheet() {
+    const E = savingsEngine(svYear);
+    const rows = E.rows.filter(r => r.status !== 'future');
+    openSheet(`Régularité ${svYear}`, `<section class="card sv-tbl">${rows.map(r => `<div class="sv-trow clickable" data-validate-saving="${r.key}">
+      <span class="mn">${ML[r.month].slice(0, 4)}.</span>
+      <div class="col"><small>Prévu</small><b>${eur(r.planned)}</b></div>
+      <div class="col real"><small>Réalisé</small><b>${r.validated ? eur(r.realized) : '—'}</b></div>
+      <span class="stt sv-st-${r.meta.cls}" style="padding:3px 8px;border-radius:999px">${r.meta.sym} ${r.meta.label}</span></div>`).join('') || '<div class="empty">Aucun mois évaluable.</div>'}</section>
+      <div class="insight" style="margin-top:10px">Régularité : <b>${E.respected}/${E.evaluable.length || 0}</b> mois respectés (${E.regularity}%).</div>`);
+  }
+
+  /* Plan de rattrapage */
+  function savingsCatchupSheet() {
+    const E = savingsEngine(svYear); const R = E.retardNet;
+    if (R <= 0) { openSheet('Rattrapage', '<div class="empty">Aucun retard à rattraper. 🎉</div>'); return; }
+    const opts = [[1, Math.ceil(R)], [3, Math.ceil(R / 3)], [6, Math.ceil(R / 6)]];
+    openSheet('Rattraper mon retard', `
+      <section class="card" style="border-color:#f6d3da;background:#fdf0f2"><small style="color:var(--mut)">Montant total manquant</small><h2 style="margin:4px 0;color:var(--sv-red)">${eur(R)}</h2></section>
+      <div class="sec-head" style="margin-top:12px"><h2 style="font-size:14px">Pour rattraper sans changer tes échéances</h2></div>
+      ${opts.map(([mths, pm]) => `<button class="sv-catch-opt" data-sv-apply-catchup="${mths}" data-permonth="${pm}"><div><b>+${eur(pm)} / mois</b><br><small>pendant ${mths} mois</small></div><span class="link">Choisir ›</span></button>`).join('')}
+      ${extra.savingsCatchup ? `<button class="ghost danger" style="margin-top:10px" data-sv-clear-catchup>Annuler le plan de rattrapage en cours</button>` : ''}
+      <div class="insight" style="margin-top:10px">Ce rattrapage s'ajoute temporairement à ton engagement de ${eur(svBaseEngagement())}/mois, puis disparaît automatiquement. Ton engagement de base ne change pas.</div>`);
   }
 
   function whatIfSavingsText(delta) {
@@ -2285,7 +2510,19 @@
     if (e.target.closest('[data-add-tx-install]')) return txForm('expense', '', true);
     if (e.target.closest('[data-open-birthday]')) return birthdayForm();
     if (e.target.closest('[data-add-goal]')) return goalForm();
-    if (e.target.closest('[data-edit-month-saving]')) return monthlySavingForm();
+    const svv = e.target.closest('[data-validate-saving]'); if (svv) { const k = svv.dataset.validateSaving; if (svStatus(k).status === 'future') { toast('Mois à venir : pas encore de validation.'); return; } return savingsValidateSheet(k); }
+    const svy = e.target.closest('[data-sv-year]'); if (svy) { svYear = (svYear || year) + (+svy.dataset.svYear); render(); return; }
+    const svm = e.target.closest('[data-sv-mode]'); if (svm) { svChartMode = svm.dataset.svMode; render(); return; }
+    if (e.target.closest('[data-sv-regularity]')) return savingsRegularitySheet();
+    if (e.target.closest('[data-sv-catchup]')) return savingsCatchupSheet();
+    const svmo = e.target.closest('[data-sv-mo]'); if (svmo) return savingsValidateSheet(svmo.dataset.svMo);
+    const svq = e.target.closest('[data-sv-quick]'); if (svq) { const inp = $('#savingsValidateForm [name=amount]'); if (inp) inp.value = svq.dataset.svQuick; $$('.sv-quick button').forEach(b => b.classList.toggle('on', b === svq)); return; }
+    const svn = e.target.closest('[data-sv-nothing]'); if (svn) { const k = svn.dataset.svNothing; const m = monthObj(k); svApplyAllocation(k, {}); m.savings = { amount: 0, paid: true, date: today(), planned: svPlanned(k), alloc: {} }; saveBudget(); closeSheet(); render(); toast('Mois marqué : rien épargné'); return; }
+    const svc = e.target.closest('[data-cancel-validation]'); if (svc) { const k = svc.dataset.cancelValidation; const m = budget.monthlyData[k]; if (m && m.savings) { svApplyAllocation(k, {}); const prev = { ...m.savings }; m.savings = { amount: 0, paid: false, date: '', planned: m.savings.planned }; saveBudget(); closeSheet(); render(); toast('Validation annulée', () => { m.savings = prev; svApplyAllocation(k, prev.alloc || {}); saveBudget(); render(); }); } return; }
+    const svac = e.target.closest('[data-sv-apply-catchup]'); if (svac) { extra.savingsCatchup = { total: savingsEngine(svYear).retardNet, perMonth: num(svac.dataset.permonth), months: +svac.dataset.svApplyCatchup, startKey: svRealKey() }; saveExtra(); closeSheet(); render(); toast('Plan de rattrapage activé'); return; }
+    if (e.target.closest('[data-sv-clear-catchup]')) { extra.savingsCatchup = null; saveExtra(); closeSheet(); render(); toast('Plan de rattrapage annulé'); return; }
+
+    if (e.target.closest('[data-edit-month-saving]')) return savingsValidateSheet(key());
     if (e.target.closest('[data-edit-coverage-target]')) { const v = prompt('Objectif de couverture (en mois)', extra.coverageTargetMonths); if (v !== null && num(v) > 0) { extra.coverageTargetMonths = num(v); saveExtra(); render(); } return; }
     if (e.target.closest('[data-open-exchange]')) return exchangeForm();
     if (e.target.closest('[data-edit-strategy]')) return strategyForm();
@@ -2407,6 +2644,18 @@
       const from = extra.pockets.find(p => p.id === fd.get('from')); const to = extra.pockets.find(p => p.id === fd.get('to')); const amount = num(fd.get('amount'));
       if (from && to && from !== to && amount > 0) { from.balance = num(from.balance) - amount; to.balance = num(to.balance) + amount; saveExtra(); }
       closeSheet(); render(); return;
+    }
+    if (e.target.id === 'savingsValidateForm') {
+      const k = fd.get('key'); const m = monthObj(k);
+      const amount = Math.max(0, num(fd.get('amount')));
+      const pocketId = fd.get('pocket');
+      const prev = m.savings ? { ...m.savings } : null;
+      const alloc = pocketId ? { [pocketId]: amount } : {};
+      svApplyAllocation(k, alloc); // idempotent : révoque l'ancienne affectation avant d'appliquer la nouvelle
+      m.savings = { amount, paid: true, date: fd.get('date') || today(), planned: svPlanned(k), alloc };
+      saveBudget(); closeSheet(); render();
+      toast(`Épargne de ${ML[+k.slice(5, 7) - 1].toLowerCase()} validée : ${eur(amount)}`, prev ? () => { svApplyAllocation(k, prev.alloc || {}); m.savings = prev; saveBudget(); render(); } : null);
+      return;
     }
     if (e.target.id === 'monthlySavingForm') {
       const m = monthObj(); const amount = Math.max(0, num(fd.get('amount')));
