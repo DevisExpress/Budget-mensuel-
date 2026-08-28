@@ -115,3 +115,35 @@
   .home-smart .sb{font-size:16px}
   .home-split .s-val{font-size:14px}
 }
+
+/* Consolidation responsive : Accueil doit tenir dans la largeur réelle, sans masquer un débordement. */
+#view,.stack,.home-main,.home-quick,.home-smart3,.home-glance{width:100%;max-width:100%;min-width:0}
+.home-main,.home-main *{box-sizing:border-box}
+.home-cols{grid-template-columns:repeat(3,minmax(0,1fr))}
+.home-quick{grid-template-columns:repeat(6,minmax(0,1fr))}
+.home-smart3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.home-glance{grid-template-columns:repeat(4,minmax(0,1fr))}
+.home-split>button>div:nth-child(2){min-width:0;overflow:hidden}
+.home-split .s-val{overflow:hidden;text-overflow:ellipsis}
+@media(max-width:390px){
+  .home-main{padding-left:12px;padding-right:12px}
+  .home-col.center{padding-left:5px;padding-right:5px}
+  .home-col .lbl{font-size:9px}
+  .home-col .sub{font-size:8.5px}
+  .home-barrow{font-size:9.5px}
+  .home-split{gap:3px;padding-left:4px;padding-right:4px}
+  .home-split>button{gap:6px;padding:0 2px}
+  .home-split .ic{width:32px;height:32px;flex-basis:32px}
+  .home-split .chev{display:none}
+}
+
+/* Fidélité maquette + correction définitive du décalage Accueil */
+body:has(.home-main){overflow-x:clip}
+#app:has(.home-main){width:min(100%,480px);max-width:480px;margin-inline:auto;overflow-x:clip}
+#view:has(.home-main){width:100%;max-width:100%;padding-left:14px;padding-right:14px;overflow-x:clip}
+#view:has(.home-main)>.stack{width:100%;max-width:100%;margin:0 auto}
+.home-main{background:linear-gradient(145deg,#10ad61,#078a49);padding:18px 16px 16px;border-radius:20px}
+.home-col .val{font-size:clamp(15px,4.8vw,22px)}
+.home-tl{border:1px solid var(--line);border-radius:14px;padding:0 10px;background:#fff}
+.home-smart3{gap:8px}.home-smart{min-height:118px}
+@media(max-width:390px){#view:has(.home-main){padding-left:12px;padding-right:12px}.home-main{padding-left:13px;padding-right:13px}.home-quick{padding-left:1px;padding-right:1px}.home-quick button{font-size:8.5px}.home-quick .qi{width:36px;height:36px}.home-smart{padding:10px 8px}.home-smart .st{font-size:9.5px}.home-smart .sb{font-size:15px}.home-gl .gv{font-size:12px}}

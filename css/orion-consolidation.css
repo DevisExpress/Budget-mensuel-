@@ -1,0 +1,44 @@
+/* ============================================================================
+   Budget Orion — Consolidation globale (passe interface/navigation/centrage).
+   Additif : ne modifie AUCUN CSS validé (chargé en dernier).
+
+   CAUSE RACINE DU DÉCALAGE ACCUEIL (mesurée au navigateur réel) :
+   `.stack` (app.css) est une grille à colonne implicite `auto`. Or les
+   grid-items reçoivent `min-width:auto` (= min-content) : un descendant non
+   rétrécissable (grande carte verte) imposait 440px à la piste, débordant le
+   viewport (360/390/430). `overflow-x:hidden` ne faisait que MASQUER ce
+   débordement (scrollWidth===clientWidth trompeur).
+
+   CORRECTION EXACTE : forcer la colonne à `minmax(0,1fr)` → les items ne
+   peuvent plus dépasser la largeur du conteneur. (Hero 440 → 362px à 390.)
+   ========================================================================= */
+.stack { grid-template-columns: minmax(0, 1fr); }
+
+/* Résidu Accueil (7px) : le bloc "À payer / Jours restants" doit pouvoir tronquer. */
+.home-split > button { min-width: 0; }
+.home-split > button > * { min-width: 0; }
+.home-split .s-lbl, .home-split .s-val { overflow: hidden; text-overflow: ellipsis; }
+
+/* Ceinture & bretelles : toute grille interne à colonnes fixes borne ses pistes. */
+.home-cols, .home-glance, .an-kpis, .an-cmp, .sv-valid-grid, .sv-reg-counts,
+.gl-ov, .gl-glob, .metric-grid, .pl-sum, .an-marks, .an-avgs, .sv-quick, .gl-d-3 {
+  grid-template-columns: repeat(var(--cols, 0), minmax(0, 1fr));
+}
+/* (les composants ci-dessus définissent déjà leur nombre de colonnes ; on ne
+   surcharge donc pas leur grid-template-columns — on se contente d'assurer
+   min-width:0 sur leurs enfants directs.) */
+.home-cols > *, .home-glance > *, .an-kpis > *, .an-cmp > *, .sv-valid-grid > *,
+.sv-reg-counts > *, .gl-ov > *, .gl-glob > *, .metric-grid > *, .pl-sum > *,
+.an-marks > *, .an-avgs > *, .sv-quick > *, .gl-d-3 > *, .home-quick > * {
+  min-width: 0;
+}
+
+/* Pont Épargne ↔ Objectifs : ligne "destination" cliquable, style cohérent. */
+.sv-goal-link, .gl-source-link { display: flex; align-items: center; gap: 10px; padding: 10px 2px; border-top: 1px solid var(--line); font-size: 12.5px; cursor: pointer; }
+.sv-goal-link:first-child, .gl-source-link:first-child { border-top: 0; }
+.sv-goal-link .emo, .gl-source-link .emo { width: 34px; height: 34px; flex: 0 0 34px; border-radius: 11px; background: #eef8f2; display: grid; place-items: center; font-size: 17px; }
+.sv-goal-link .m, .gl-source-link .m { flex: 1; min-width: 0; }
+.sv-goal-link .m b, .gl-source-link .m b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
+.sv-goal-link .m small, .gl-source-link .m small { color: var(--mut); font-size: 11px; }
+.sv-goal-link .pct { flex: 0 0 auto; font-weight: 850; color: var(--gd); font-size: 13px; }
+.sv-goal-link .chev, .gl-source-link .chev { color: #c2ccc6; flex: 0 0 auto; }

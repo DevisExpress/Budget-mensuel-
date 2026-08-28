@@ -133,3 +133,7 @@
   .sv-quick button { font-size:12px; }
   .sv-trow .mn { flex-basis:60px; font-size:11.5px; }
 }
+
+/* Pont visible Épargne ↔ Objectifs */
+.sv-goal-link{display:block;max-width:100%;padding:3px 0 1px;margin:1px 0 0;color:#2f6bd6;font-size:10.5px;font-weight:800;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sv-goal-none{display:block;color:var(--mut);font-size:9.5px;margin-top:1px}

@@ -1517,9 +1517,15 @@
       <span class="dotc" style="background:${color}"></span>
       <div class="cn"><b>${clickable ? (CATS[c] || c) : 'Autres'}</b><div class="track"><span style="width:${Math.round((val / catMax) * 100)}%;background:${color}"></span></div></div>
       <div class="cv"><b>${eur(val)}</b><small>${Math.round((val / totCat) * 100)} %</small></div>${clickable ? '<span class="chev">›</span>' : ''}</div>`;
-    const where = `<section class="card"><div class="sec-head"><h2>Où part ton argent ?</h2></div>
-      ${top.map(c => catRow(c, E.cats[c], COLORS[c] || '#5f8aa8', true)).join('')}
-      ${othersVal > 0 ? catRow('autres_group', othersVal, '#c2ccc6', false) : ''}</section>`;
+    const donutItems = top.map(c => ({ key:c, label:CATS[c] || c, val:E.cats[c], color:COLORS[c] || '#5f8aa8' }));
+    if (othersVal > 0) donutItems.push({ key:'autres_group', label:'Autres', val:othersVal, color:'#c2ccc6' });
+    let donutPos = 0;
+    const donutStops = donutItems.map(x => { const a = donutPos; donutPos += (x.val / totCat) * 100; return `${x.color} ${a.toFixed(2)}% ${donutPos.toFixed(2)}%`; }).join(',');
+    const where = `<section class="card an-where"><div class="sec-head"><div><h2>Où part ton argent ?</h2><small>Répartition des dépenses (${eur(E.expenseReal)})</small></div></div>
+      <div class="an-donut-layout">
+        <div class="an-donut" style="background:conic-gradient(${donutStops || '#e7eee9 0 100%'})"><div class="an-donut-hole"><b>${eur(E.expenseReal)}</b><small>dépensés</small></div></div>
+        <div class="an-donut-legend">${donutItems.map(x => `<button ${x.key !== 'autres_group' ? `data-an-cat="${x.key}"` : ''}><i style="background:${x.color}"></i><span>${esc(x.label)}</span><b>${Math.round((x.val/totCat)*100)} %</b></button>`).join('')}</div>
+      </div></section>`;
 
     // Comparaison période précédente
     const cmp = E.prev.has ? `<section class="card"><div class="sec-head"><h2>Vs période précédente</h2></div>
@@ -1737,9 +1743,10 @@
     // Poches
     const pocketsHtml = (extra.pockets || []).map(p => {
       const goal = num(p.goal) || 0; const pct = goal ? Math.min(100, Math.round((num(p.balance) / goal) * 100)) : (pTotal ? Math.round((num(p.balance) / pTotal) * 100) : 0);
+      const linkedGoal = goals.find(g => g.linkedPocketId === p.id && !g.archived);
       return `<div class="sv-pocket clickable" data-edit-pocket="${p.id}">
         <div class="pemo">${esc(p.emoji || '💶')}</div>
-        <div class="pmain"><b>${esc(p.name)}${p.security ? ' 🛡️' : ''}</b><span class="amt">${eur(p.balance)}${goal ? ' / ' + eur(goal) : ''}${p.monthlyTarget ? ' · ' + eur(p.monthlyTarget) + '/mois' : ''}</span><div class="track"><span style="width:${pct}%"></span></div></div>
+        <div class="pmain"><b>${esc(p.name)}${p.security ? ' 🛡️' : ''}</b><span class="amt">${eur(p.balance)}${goal ? ' / ' + eur(goal) : ''}${p.monthlyTarget ? ' · ' + eur(p.monthlyTarget) + '/mois' : ''}</span>${linkedGoal ? `<button class="sv-goal-link" data-gl-detail="${linkedGoal.id}">🎯 Objectif ${esc(linkedGoal.n)} · ${Math.round(glProgress(linkedGoal))}% ›</button>` : '<span class="sv-goal-none">Aucun objectif lié</span>'}<div class="track"><span style="width:${pct}%"></span></div></div>
         <span class="pct">${pct}%</span></div>`;
     }).join('');
 
@@ -2709,7 +2716,7 @@
     if (e.target.closest('[data-edit-period]')) { $('#periodBtn').click(); return; }
     if (e.target.closest('[data-home-glance]')) { const h = localStorage.getItem('orion_ui_glanceHidden') === '1'; try { localStorage.setItem('orion_ui_glanceHidden', h ? '0' : '1'); } catch {} render(); return; }
 
-    const g = e.target.closest('[data-go]'); if (g) { page = g.dataset.go; if (page !== 'strategy') stratPreviewRate = null; render(); return; }
+    const g = e.target.closest('[data-go]'); if (g) { page = g.dataset.go; if (page !== 'strategy') stratPreviewRate = null; closeSheet(); render(); return; }
     if (e.target.closest('[data-add-tx]')) return txForm();
     if (e.target.closest('[data-add-tx-install]')) return txForm('expense', '', true);
     if (e.target.closest('[data-open-birthday]')) return birthdayForm();
