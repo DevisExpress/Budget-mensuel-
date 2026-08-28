@@ -42,3 +42,39 @@
 .sv-goal-link .m small, .gl-source-link .m small { color: var(--mut); font-size: 11px; }
 .sv-goal-link .pct { flex: 0 0 auto; font-weight: 850; color: var(--gd); font-size: 13px; }
 .sv-goal-link .chev, .gl-source-link .chev { color: #c2ccc6; flex: 0 0 auto; }
+
+/* V7.1 — Planification : résumé toujours sur UNE ligne (4 colonnes), y compris iPhone. */
+.pl-sum {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 0 !important;
+  width: 100%;
+  align-items: stretch;
+}
+.pl-sum .m {
+  min-width: 0 !important;
+  padding: 3px 8px !important;
+  border-left: 1px solid var(--line) !important;
+  text-align: left;
+}
+.pl-sum .m:first-child { border-left: 0 !important; }
+.pl-sum .m small,
+.pl-sum .m b,
+.pl-sum .m .u {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pl-sum .m small { font-size: 10px !important; }
+.pl-sum .m b { font-size: clamp(12px, 3.5vw, 16px) !important; letter-spacing: -.35px; }
+.pl-sum .m .u { display:block; margin-top:4px; font-size:9px !important; }
+@media (max-width: 390px) {
+  .pl-sum .m { padding-left: 6px !important; padding-right: 6px !important; }
+  .pl-sum .m small { font-size: 9px !important; }
+  .pl-sum .m b { font-size: 12.5px !important; }
+}
+@media (max-width: 350px) {
+  .pl-sum .m { padding-left: 4px !important; padding-right: 4px !important; }
+  .pl-sum .m b { font-size: 11.5px !important; }
+}
