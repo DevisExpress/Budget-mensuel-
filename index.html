@@ -6,6 +6,9 @@
 <meta name="description" content="Budget Orion — application de gestion budgétaire claire, intelligente et locale.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#f8fbf9">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/orion-icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icons/orion-192.png">
 <title>Budget Orion</title>
 <link rel="stylesheet" href="./css/app.css">
 <link rel="stylesheet" href="./css/orion-home.css">
@@ -41,5 +44,6 @@
 </section>
 <script src="./js/brands.js"></script>
 <script src="./js/app.js"></script>
+<script>if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));}</script>
 </body>
 </html>

@@ -102,8 +102,13 @@
     let e = found ? safeParse(found.raw, {}) : {};
     if (!e || typeof e !== 'object') e = {};
     e.birthdays = Array.isArray(e.birthdays) ? e.birthdays : [];
+    e.birthdays.forEach(b => { if (!b.id) b.id = uid('bd'); if (!b.emoji) b.emoji = '🎂'; });
     e.exchanges = Array.isArray(e.exchanges) ? e.exchanges : [];
     e.events = Array.isArray(e.events) ? e.events : [];
+    e.events.forEach(ev => { if (!ev.id) ev.id = uid('ev'); if (!ev.emoji) ev.emoji = '🎉'; });
+    e.notifications = (e.notifications && typeof e.notifications === 'object') ? e.notifications : {};
+    if (e.notifications.enabled == null) e.notifications.enabled = false;
+    if (!Array.isArray(e.notifications.leadDays) || !e.notifications.leadDays.length) e.notifications.leadDays = [2, 1];
     e.strategy = e.strategy || { capital: 0, monthly: 300, rate: 7 };
     // Migration additive (non destructive) : horizon de projection et taux des 3 scénarios.
     e.strategy.horizon = num(e.strategy.horizon) || 20;
@@ -261,6 +266,7 @@
   function monthObj(k = key()) {
     if (!budget.monthlyData[k]) budget.monthlyData[k] = { income: [], expenses: [], savings: { amount: 0, paid: false, date: '' }, meta: { generated: true } };
     generateTemplates(k);
+    if (ensureCalendarExpensesForMonth(k)) saveBudget();
     return budget.monthlyData[k];
   }
 
@@ -276,6 +282,7 @@
       const ov = (t.overrides && t.overrides[k]) || null;
       list.push({ name: ov?.name || t.name, amount: num(ov ? ov.amount : t.amount), cat: ov?.cat || t.cat || 'autres', paid: false, dueDate: t.kind === 'income' ? '' : `${k}-${p2(day)}`, templateId: t.id, projected: true });
     });
+    desiredCalendarExpensesForMonth(k).forEach(x => fake.expenses.push({ ...x, paid:false, paidDate:'', projected:true }));
     return fake;
   }
 
@@ -333,6 +340,95 @@
     return { date: iso(next.getFullYear(), next.getMonth(), next.getDate()), days: Math.ceil((next - t) / 86400000), age };
   }
 
+  // Dépenses liées aux anniversaires / événements : une seule source métier,
+  // une occurrence financière automatiquement synchronisée dans monthlyData.
+  function birthdayOccurrenceForYear(b, y) {
+    if (!b || !b.birthDate) return null;
+    const src = new Date(b.birthDate + 'T12:00:00');
+    let d = src.getDate(), m = src.getMonth();
+    // 29 février : si année non bissextile, on retient le 28 février.
+    if (m === 1 && d === 29 && lastDayOfMonth(y, 1) === 28) d = 28;
+    return iso(y, m, d);
+  }
+
+  function linkedCalendarDescriptor(type, src, occurrenceDate) {
+    if (!src || !occurrenceDate) return null;
+    const amount = type === 'birthday' ? num(src.budget) : num(src.amount);
+    if (!(amount > 0)) return null;
+    const emoji = src.emoji || (type === 'birthday' ? '🎂' : '🎉');
+    const name = type === 'birthday' ? `Anniversaire · ${src.name || 'Sans nom'}` : (src.name || 'Événement');
+    return {
+      sourceType: type,
+      sourceEventId: src.id,
+      sourceOccurrenceDate: occurrenceDate,
+      name, amount, cat: 'autres', dueDate: occurrenceDate,
+      customEmoji: emoji, autoEventExpense: true
+    };
+  }
+
+  function desiredCalendarExpensesForMonth(k) {
+    const [y] = k.split('-').map(Number), out = [];
+    (extra.birthdays || []).forEach(b => {
+      const d = birthdayOccurrenceForYear(b, y);
+      if (d && d.slice(0, 7) === k) { const x = linkedCalendarDescriptor('birthday', b, d); if (x) out.push(x); }
+    });
+    (extra.events || []).forEach(ev => {
+      const d = ev.date || '';
+      if (d.slice(0, 7) === k) { const x = linkedCalendarDescriptor('event', ev, d); if (x) out.push(x); }
+    });
+    return out;
+  }
+
+  function ensureCalendarExpensesForMonth(k) {
+    const mo = budget.monthlyData[k] || (budget.monthlyData[k] = { income: [], expenses: [], savings: { amount: 0, paid: false, date: '' }, meta: {} });
+    mo.expenses = Array.isArray(mo.expenses) ? mo.expenses : [];
+    const desired = desiredCalendarExpensesForMonth(k);
+    const wanted = new Map(desired.map(x => [`${x.sourceType}|${x.sourceEventId}|${x.sourceOccurrenceDate}`, x]));
+    const seen = new Set(); let changed = false;
+    const kept = [];
+    mo.expenses.forEach(r => {
+      if (!r || !r.autoEventExpense) { kept.push(r); return; }
+      const id = `${r.sourceType}|${r.sourceEventId}|${r.sourceOccurrenceDate}`;
+      const d = wanted.get(id);
+      if (!d || seen.has(id)) {
+        if (!d && r.paid) {
+          // Une dépense déjà réellement payée devient un historique normal : on ne détruit
+          // jamais une sortie d'argent réelle si l'événement source est déplacé/supprimé.
+          r.sourceArchived = true; r.autoEventExpense = false; kept.push(r);
+        }
+        changed = true; return;
+      }
+      seen.add(id);
+      // Avant paiement, l'événement est l'autorité pour nom/date/montant/emoji.
+      // Après paiement, le montant/date deviennent historiques et ne sont plus réécrits.
+      const fields = r.paid ? ['name','cat','customEmoji','sourceType','sourceEventId','sourceOccurrenceDate','autoEventExpense'] : ['name','amount','cat','dueDate','customEmoji','sourceType','sourceEventId','sourceOccurrenceDate','autoEventExpense'];
+      fields.forEach(f => { if (r[f] !== d[f]) { r[f] = d[f]; changed = true; } });
+      kept.push(r);
+    });
+    desired.forEach(d => {
+      const id = `${d.sourceType}|${d.sourceEventId}|${d.sourceOccurrenceDate}`;
+      if (!seen.has(id)) { kept.push({ ...d, paid: false, paidDate: '', createdPeriod: k }); changed = true; }
+    });
+    if (changed) mo.expenses = kept;
+    return changed;
+  }
+
+  function syncCalendarExpenses() {
+    const keys = new Set(Object.keys(budget.monthlyData || {}));
+    const cy = new Date().getFullYear();
+    [cy - 1, cy, cy + 1, year].forEach(y => (extra.birthdays || []).forEach(b => {
+      const d = birthdayOccurrenceForYear(b, y); if (d) keys.add(d.slice(0, 7));
+    }));
+    (extra.events || []).forEach(ev => { if ((ev.date || '').length >= 7) keys.add(ev.date.slice(0, 7)); });
+    let changed = false; keys.forEach(k => { if (ensureCalendarExpensesForMonth(k)) changed = true; });
+    if (changed) saveBudget();
+  }
+
+  function calendarSourceIdentity(r) {
+    if (!r || !r.autoEventExpense) return identityOf(r || {});
+    return { mark: r.customEmoji || (r.sourceType === 'birthday' ? '🎂' : '🎉'), cls: 'brand-generic', label: r.sourceType === 'birthday' ? 'Anniversaire' : 'Événement' };
+  }
+
   function installmentItems(atKey = key()) {
     return (budget.recurringTemplates || [])
       .filter(t => t.kind === 'expense' && num(t.installments) > 0)
@@ -374,11 +470,13 @@
     let guard = 0;
     while (cursorKey <= endKey && guard < 26) {
       const mo = cursorKey === key() ? monthObj(cursorKey) : projectMonth(cursorKey);
-      (mo.expenses || []).forEach(r => { if (r.dueDate && new Date(r.dueDate) >= start && new Date(r.dueDate) <= end) items.push(r); });
+      (mo.expenses || []).forEach(r => { if (r.dueDate && new Date(r.dueDate) >= start && new Date(r.dueDate) <= end) items.push(r.autoEventExpense ? { ...r, isBirthday: r.sourceType === 'birthday', isEvent: r.sourceType === 'event' } : r); });
       cursorKey = monthKeyAdd(cursorKey, 1);
       guard++;
     }
-    extra.birthdays.forEach(b => { const n = birthdayNext(b); if (n && n.days >= 0 && n.days <= days) items.push({ name: b.name, amount: num(b.budget), dueDate: n.date, isBirthday: true }); });
+    // Les événements sans budget restent visibles dans l'horizon sans créer de dépense fictive.
+    extra.birthdays.forEach(b => { const n = birthdayNext(b); if (n && n.days >= 0 && n.days <= days && num(b.budget) <= 0) items.push({ name: b.name, amount: 0, dueDate: n.date, isBirthday: true, emoji:b.emoji || '🎂' }); });
+    (extra.events || []).forEach(ev => { const d=daysUntilDate(ev.date); if (d != null && d >= 0 && d <= days && num(ev.amount) <= 0) items.push({ name:ev.name, amount:0, dueDate:ev.date, isEvent:true, emoji:ev.emoji || '🎉' }); });
     return items.sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
   }
 
@@ -751,11 +849,99 @@
   function homeTimelineEvents() {
     const mo = monthObj();
     const list = [];
-    (mo.expenses || []).forEach((r, idx) => { if (!r.paid && r.dueDate) list.push({ kind: 'expense', name: r.name, cat: r.cat, amount: num(r.amount), date: r.dueDate, days: daysUntilDate(r.dueDate), idx }); });
-    extra.birthdays.forEach((b, i) => { const n = birthdayNext(b); if (n && n.days >= 0 && n.days <= 45) list.push({ kind: 'birthday', name: b.name, amount: num(b.budget), date: n.date, days: n.days, i, age: n.age }); });
+    (mo.expenses || []).forEach((r, idx) => { if (!r.paid && r.dueDate && !r.autoEventExpense) list.push({ kind: 'expense', name: r.name, cat: r.cat, amount: num(r.amount), date: r.dueDate, days: daysUntilDate(r.dueDate), idx, ref:r }); });
+    extra.birthdays.forEach((b, i) => { const n = birthdayNext(b); if (n && n.days >= 0 && n.days <= 45) list.push({ kind: 'birthday', name: b.name, amount: num(b.budget), date: n.date, days: n.days, i, age: n.age, emoji:b.emoji || '🎂' }); });
+    (extra.events || []).forEach((ev, i) => { const d = daysUntilDate(ev.date); if (d != null && d >= 0 && d <= 45) list.push({ kind:'event', name:ev.name, amount:num(ev.amount), date:ev.date, days:d, i, emoji:ev.emoji || '🎉' }); });
     list.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
     return list.slice(0, 4);
   }
+  const KEY_NOTIFIED = 'orion_notified_v1';
+  function notificationSettings() {
+    extra.notifications = (extra.notifications && typeof extra.notifications === 'object') ? extra.notifications : { enabled:false, leadDays:[2,1] };
+    if (!Array.isArray(extra.notifications.leadDays) || !extra.notifications.leadDays.length) extra.notifications.leadDays = [2,1];
+    return extra.notifications;
+  }
+  function actualMonthKey() { const d = new Date(); return `${d.getFullYear()}-${p2(d.getMonth()+1)}`; }
+  function notificationExpenses() {
+    const set = notificationSettings(), leads = new Set(set.leadDays.map(Number));
+    const now = new Date(); now.setHours(0,0,0,0);
+    const out = [];
+    for (let add=0; add<=1; add++) {
+      const k = monthKeyAdd(actualMonthKey(), add);
+      const mo = budget.monthlyData[k] || null;
+      if (mo) { generateTemplates(k); ensureCalendarExpensesForMonth(k); }
+      const src = budget.monthlyData[k] || projectMonth(k);
+      (src.expenses || []).forEach((r, idx) => {
+        if (r.paid || !r.dueDate) return;
+        const days = daysUntilDate(r.dueDate);
+        if (leads.has(days)) out.push({ r, idx, key:k, days });
+      });
+    }
+    return out.sort((a,b) => a.r.dueDate.localeCompare(b.r.dueDate) || num(b.r.amount)-num(a.r.amount));
+  }
+  function estimateBalanceAfterExpense(item) {
+    const k0 = actualMonthKey();
+    const mo0 = budget.monthlyData[k0] || {income:[],expenses:[]};
+    const t0 = totals(mo0);
+    let bal = t0.current;
+    const target = item.r.dueDate;
+    // Déduit les prélèvements encore dus jusqu'à cette date, y compris celui visé.
+    [k0, monthKeyAdd(k0,1)].forEach(k => {
+      const mo = budget.monthlyData[k] || projectMonth(k);
+      (mo.expenses || []).forEach(r => { if (!r.paid && r.dueDate && r.dueDate <= target && r.dueDate >= today()) bal -= num(r.amount); });
+      if (k !== k0) (mo.income || []).forEach(r => { if ((r.paid || r.auto || /salaire|paie/i.test(r.name||'')) && r.dueDate && r.dueDate <= target) bal += num(r.amount); });
+    });
+    return bal;
+  }
+  function notificationMessage(item) {
+    const when = item.days === 1 ? 'demain' : `dans ${item.days} jours`;
+    const bal = estimateBalanceAfterExpense(item);
+    const suffix = Number.isFinite(bal) ? ` Solde estimé après les prélèvements prévus : ${eur(bal)}.` : '';
+    return `${item.r.name || 'Dépense'} de ${eur(item.r.amount)} prévu ${when}.${suffix}`;
+  }
+  function notificationId(item) {
+    return `${item.r.templateId || item.r.sourceEventId || item.r.name}|${item.r.dueDate}|${item.days}`;
+  }
+  function readNotified() { const x = safeParse(localStorage.getItem(KEY_NOTIFIED), {}); return x && typeof x === 'object' ? x : {}; }
+  function cleanupNotified(map) { const lim = Date.now()-45*86400000; Object.keys(map).forEach(k => { if (num(map[k]) < lim) delete map[k]; }); return map; }
+  async function browserNotify(title, body, tag) {
+    try {
+      if (!('Notification' in window) || Notification.permission !== 'granted') return false;
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready.catch(()=>null);
+        if (reg) { await reg.showNotification(title, { body, tag, icon:'./icons/orion-icon.svg', badge:'./icons/orion-icon.svg', data:{url:'./'} }); return true; }
+      }
+      new Notification(title, { body, tag }); return true;
+    } catch (_) { return false; }
+  }
+  async function maybeNotifyUpcomingExpenses(force=false) {
+    const set = notificationSettings(); if (!set.enabled) return;
+    const map = cleanupNotified(readNotified()); let changed=false;
+    for (const item of notificationExpenses()) {
+      const id = notificationId(item); if (!force && map[id]) continue;
+      const ok = await browserNotify('Budget Orion · Dépense à venir', notificationMessage(item), id);
+      if (ok) { map[id]=Date.now(); changed=true; }
+    }
+    if (changed) try { localStorage.setItem(KEY_NOTIFIED, JSON.stringify(map)); } catch {}
+  }
+  async function enableNotifications() {
+    if (!('Notification' in window)) { toast('Notifications non prises en charge par ce navigateur'); return false; }
+    let perm = Notification.permission;
+    if (perm === 'default') { try { perm = await Notification.requestPermission(); } catch (_) {} }
+    const ok = perm === 'granted'; notificationSettings().enabled = ok; saveExtra();
+    toast(ok ? '🔔 Alertes activées' : 'Notifications refusées dans le navigateur');
+    if (ok) maybeNotifyUpcomingExpenses(true);
+    return ok;
+  }
+  function notificationCenter() {
+    const list = notificationExpenses();
+    const perm = ('Notification' in window) ? Notification.permission : 'unsupported';
+    openSheet('🔔 Alertes de dépenses', `<div class="insight">Budget Orion te prévient 1 à 2 jours avant les dépenses prévues. Sur iPhone, installe l’app sur l’écran d’accueil et autorise les notifications pour la meilleure fiabilité.</div>
+      <section class="card list">${list.length ? list.map(x => { const id=identityOf(x.r); return `<div class="row"><div class="brandmark ${id.cls}">${id.mark}</div><div class="row-main"><b>${esc(x.r.name)}</b><small>${x.days===1?'Demain':'Dans '+x.days+' jours'} · ${dateLabel(x.r.dueDate)}</small></div><b>-${eur(x.r.amount)}</b></div>`; }).join('') : '<div class="empty">Aucune dépense à notifier dans les 2 prochains jours.</div>'}</section>
+      <button class="action" type="button" data-enable-notifications>${perm==='granted' && notificationSettings().enabled ? '✓ Notifications activées' : 'Activer les notifications'}</button>
+      ${notificationSettings().enabled ? '<button class="ghost" type="button" data-test-notifications>Tester maintenant</button><button class="ghost danger" type="button" data-disable-notifications>Désactiver</button>' : ''}`);
+  }
+
   function homeSavingsInfo() {
     const mo = monthObj(), t = totals();
     const engagement = (extra.pockets || []).reduce((s, p) => s + num(p.monthlyTarget), 0);
@@ -855,12 +1041,13 @@
     const delta = (d, goodWhenUp) => d == null ? '' : `<div class="gvs ${(d >= 0) === goodWhenUp ? 'up-good' : 'up-bad'}">${d >= 0 ? '+' : '−'}${eur(Math.abs(d))} vs ${prevName}</div>`;
 
     const timelineRows = events.length ? events.map(ev => {
-      const color = homeEventColor(ev.days, ev.kind === 'birthday');
-      const when = homeWhenLabel(ev.days, ev.kind === 'birthday');
-      const br = ev.kind === 'birthday' ? { mark: '🎂', cls: 'brand-generic' } : brandOf(ev.name, ev.cat);
-      const sub = ev.kind === 'birthday' ? `${dateLabel(ev.date)} · Budget prévu : ${eur(ev.amount)}` : `${dateLabel(ev.date)} · ${CATS[ev.cat] || 'Autres'}`;
-      const attr = ev.kind === 'birthday' ? `data-edit-birthday="${ev.i}"` : `data-edit-tx="expense" data-index="${ev.idx}"`;
-      const amt = ev.kind === 'birthday' ? `<span class="tl-amt when-pink">${eur(ev.amount)}</span>` : `<span class="tl-amt">-${eur(ev.amount)}</span>`;
+      const personal = ev.kind === 'birthday' || ev.kind === 'event';
+      const color = homeEventColor(ev.days, personal);
+      const when = homeWhenLabel(ev.days, personal);
+      const br = personal ? { mark: ev.emoji || (ev.kind === 'birthday' ? '🎂' : '🎉'), cls: 'brand-generic' } : identityOf(ev.ref || { name:ev.name, cat:ev.cat });
+      const sub = personal ? `${dateLabel(ev.date)}${ev.amount > 0 ? ' · Budget prévu : ' + eur(ev.amount) : ''}` : `${dateLabel(ev.date)} · ${CATS[ev.cat] || 'Autres'}`;
+      const attr = ev.kind === 'birthday' ? `data-edit-birthday="${ev.i}"` : ev.kind === 'event' ? `data-edit-event="${ev.i}"` : `data-edit-tx="expense" data-index="${ev.idx}"`;
+      const amt = personal ? `<span class="tl-amt when-pink">${ev.amount > 0 ? eur(ev.amount) : ''}</span>` : `<span class="tl-amt">-${eur(ev.amount)}</span>`;
       return `<div class="tl-row clickable" ${attr}>
         <div class="home-tl-dotcol"><span class="home-tl-dot dot-${color}"></span></div>
         <div class="brandmark tl-logo ${br.cls}">${br.mark}</div>
@@ -1141,9 +1328,9 @@
   function planItemsForISO(ds) {
     const k = ds.slice(0, 7), cur = k === key(), mo = planMonthObj(k), out = [];
     (mo.income || []).forEach((r, i) => { const d = r.dueDate || `${k}-01`; if (d === ds) out.push({ kind: 'income', color: 'green', name: r.name, cat: r.cat, amount: num(r.amount), dueDate: ds, sign: '+', idx: cur ? i : -1, paid: r.paid || isAutoIncome(r), ref: r }); });
-    (mo.expenses || []).forEach((r, i) => { if (r.dueDate === ds) { const tpl = templateOf(r); const inst = tpl && num(tpl.installments) > 0; out.push({ kind: 'expense', color: inst ? 'blue' : 'red', name: r.name, cat: r.cat, amount: num(r.amount), dueDate: ds, sign: '-', idx: cur ? i : -1, paid: !!r.paid, install: inst, ref: r }); } });
-    extra.birthdays.forEach((b, i) => { const n = birthdayNext(b); if (n && n.date === ds) out.push({ kind: 'birthday', color: 'pink', name: b.name, cat: 'autres', amount: num(b.budget), dueDate: ds, sign: '', bidx: i, age: n.age }); });
-    (extra.events || []).forEach((ev, i) => { if (ev.date === ds) out.push({ kind: 'event', color: 'pink', name: ev.name, cat: 'autres', amount: num(ev.amount), dueDate: ds, sign: ev.amount ? '-' : '', eidx: i, note: ev.note }); });
+    (mo.expenses || []).forEach((r, i) => { if (r.dueDate === ds && !r.autoEventExpense) { const tpl = templateOf(r); const inst = tpl && num(tpl.installments) > 0; out.push({ kind: 'expense', color: inst ? 'blue' : 'red', name: r.name, cat: r.cat, amount: num(r.amount), dueDate: ds, sign: '-', idx: cur ? i : -1, paid: !!r.paid, install: inst, ref: r }); } });
+    extra.birthdays.forEach((b, i) => { const yy=+ds.slice(0,4), bd=birthdayOccurrenceForYear(b,yy); if (bd === ds) { const born= new Date((b.birthDate||'')+'T12:00:00'); const age=Number.isFinite(born.getTime()) ? yy-born.getFullYear() : null; out.push({ kind: 'birthday', color: 'pink', name: b.name, cat: 'autres', amount: num(b.budget), dueDate: ds, sign: num(b.budget) > 0 ? '-' : '', bidx: i, age, emoji:b.emoji || '🎂' }); } });
+    (extra.events || []).forEach((ev, i) => { if (ev.date === ds) out.push({ kind: 'event', color: 'pink', name: ev.name, cat: 'autres', amount: num(ev.amount), dueDate: ds, sign: ev.amount ? '-' : '', eidx: i, note: ev.note, emoji:ev.emoji || '🎉' }); });
     let list = out;
     if (planFilter === 'expense') list = out.filter(x => x.kind === 'expense');
     else if (planFilter === 'income') list = out.filter(x => x.kind === 'income');
@@ -1161,7 +1348,7 @@
     const order = ['green', 'red', 'blue', 'pink', 'violet']; return order.filter(c => set.includes(c)).slice(0, 4);
   }
   function planRow(ev) {
-    const id = (ev.kind === 'expense' || ev.kind === 'income') ? identityOf(ev.ref || { name: ev.name, cat: ev.cat }) : { mark: ev.kind === 'birthday' ? '🎂' : '📌', cls: 'brand-generic' };
+    const id = (ev.kind === 'expense' || ev.kind === 'income') ? identityOf(ev.ref || { name: ev.name, cat: ev.cat }) : { mark: ev.emoji || (ev.kind === 'birthday' ? '🎂' : '🎉'), cls: 'brand-generic' };
     let badge, bcls;
     if (ev.kind === 'expense') { const di = dueInfo(ev.ref); badge = ev.paid ? 'Payée' : di.label; bcls = ev.paid ? 'green' : (ev.install ? 'blue' : (expColor(ev.ref) === 'red' ? 'red' : expColor(ev.ref) === 'orange' ? 'orange' : 'green')); }
     else if (ev.kind === 'income') { badge = ev.paid ? 'Reçu' : 'Attendu'; bcls = 'green'; }
@@ -2390,6 +2577,7 @@
         ${menuRow('🤝', 'Échanges / Remboursements', `${extra.exchanges.filter(x => !x.done).length} en attente`, 'data-go="exchanges"')}
       </section></div>
       <div><div class="group-title">Application</div><section class="card menu">
+        ${menuRow('🔔', 'Alertes de dépenses', notificationSettings().enabled ? 'Activées · 1 à 2 jours avant' : 'À activer', 'data-notification-center')}
         ${menuRow('🎨', 'Apparence', 'Thème clair vert doux (par défaut)', 'data-info="Apparence"')}
         ${menuRow('❓', 'Aide', '', 'data-info="Aide"')}
         ${menuRow('ℹ️', 'À propos de Budget Orion', 'Version ' + SCHEMA_VERSION, 'data-info="À propos"')}
@@ -2489,7 +2677,7 @@
     </section><button class="action ghost" type="button" data-back-to-tx="expense" data-index="${idx}">‹ Retour à la dépense</button>`);
   }
 
-  function birthdayForm(i = '') { const b = i === '' ? {} : extra.birthdays[+i] || {}; openSheet(i === '' ? 'Ajouter un anniversaire' : 'Modifier l’anniversaire', `<form class="form" id="birthdayForm"><input type="hidden" name="idx" value="${i}"><label>Prénom / nom<input name="name" required value="${esc(b.name || '')}"></label><label>Date de naissance<input type="date" name="birthDate" required value="${b.birthDate || ''}"></label><label>Budget cadeau prévu (€)<input type="number" step="0.01" name="budget" value="${num(b.budget) || ''}"></label><label>Rappel<select name="reminder"><option value="7">7 jours avant</option><option value="14" ${b.reminder == 14 ? 'selected' : ''}>14 jours avant</option><option value="30" ${b.reminder == 30 ? 'selected' : ''}>30 jours avant</option></select></label><label>Note<textarea name="note" rows="2">${esc(b.note || '')}</textarea></label><button class="action">Enregistrer</button>${i !== '' ? '<button type="button" class="ghost danger" data-delete-birthday>Supprimer</button>' : ''}</form>`); }
+  function birthdayForm(i = '') { const b = i === '' ? {} : extra.birthdays[+i] || {}; openSheet(i === '' ? 'Ajouter un anniversaire' : 'Modifier l’anniversaire', `<form class="form" id="birthdayForm"><input type="hidden" name="idx" value="${i}"><label>Prénom / nom<input name="name" required value="${esc(b.name || '')}"></label><label>Emoji / icône<input name="emoji" value="${esc(b.emoji || '🎂')}" maxlength="8" placeholder="🎂"></label><label>Date de naissance<input type="date" name="birthDate" required value="${b.birthDate || ''}"></label><label>Budget cadeau prévu (€)<input type="number" step="0.01" name="budget" value="${num(b.budget) || ''}"></label><label>Rappel<select name="reminder"><option value="7">7 jours avant</option><option value="14" ${b.reminder == 14 ? 'selected' : ''}>14 jours avant</option><option value="30" ${b.reminder == 30 ? 'selected' : ''}>30 jours avant</option></select></label><label>Note<textarea name="note" rows="2">${esc(b.note || '')}</textarea></label><button class="action">Enregistrer</button>${i !== '' ? '<button type="button" class="ghost danger" data-delete-birthday>Supprimer</button>' : ''}</form>`); }
 
   function pocketForm(id) {
     const p = extra.pockets.find(x => x.id === id);
@@ -2564,7 +2752,8 @@
     const ev = i === '' ? {} : (extra.events[+i] || {});
     openSheet(i === '' ? 'Ajouter un événement' : 'Modifier l’événement', `<form class="form" id="eventForm">
       <input type="hidden" name="idx" value="${i}">
-      <label>Nom<input name="name" required value="${esc(ev.name || '')}" placeholder="Ex : Contrôle technique"></label>
+      <label>Nom<input name="name" required value="${esc(ev.name || '')}" placeholder="Ex : Fête, contrôle technique"></label>
+      <label>Emoji / icône<input name="emoji" value="${esc(ev.emoji || '🎉')}" maxlength="8" placeholder="🎉"></label>
       <div class="two"><label>Date<input type="date" name="date" required value="${ev.date || iso(year, month, planDay || 1)}"></label><label>Montant éventuel (€)<input type="number" step="0.01" name="amount" value="${num(ev.amount) || ''}" placeholder="Optionnel"></label></div>
       <label>Note<textarea name="note" rows="2">${esc(ev.note || '')}</textarea></label>
       <button class="action">Enregistrer</button>
@@ -2711,6 +2900,11 @@
     const rdo = e.target.closest('[data-report]'); if (rdo) return reportExpenseTo(rdo.dataset.report, rdo.dataset.date);
     const dup = e.target.closest('[data-dup-tx]'); if (dup) return duplicateExpense(dup.dataset.dupTx);
 
+    if (e.target.closest('#bellBtn') || e.target.closest('[data-notification-center]')) return notificationCenter();
+    if (e.target.closest('[data-enable-notifications]')) { enableNotifications(); return; }
+    if (e.target.closest('[data-test-notifications]')) { maybeNotifyUpcomingExpenses(true); toast('Test des alertes lancé'); return; }
+    if (e.target.closest('[data-disable-notifications]')) { notificationSettings().enabled = false; saveExtra(); closeSheet(); render(); toast('Alertes désactivées'); return; }
+
     const hx = e.target.closest('[data-home-explain]'); if (hx) return homeExplain(hx.dataset.homeExplain);
     if (e.target.closest('[data-home-topay]')) return homeTopay();
     if (e.target.closest('[data-edit-period]')) { $('#periodBtn').click(); return; }
@@ -2771,7 +2965,7 @@
     const pdd = e.target.closest('[data-plan-day-detail]'); if (pdd) return dayDetails(+pdd.dataset.planDayDetail);
     const aev = e.target.closest('[data-add-event]'); if (aev) { if (aev.dataset.date) { const [Y, M, D] = aev.dataset.date.split('-').map(Number); year = Y; month = M - 1; planDay = D; } return eventForm(); }
     const eev = e.target.closest('[data-edit-event]'); if (eev) return eventForm(eev.dataset.editEvent);
-    const dev = e.target.closest('[data-delete-event]'); if (dev) { if (confirm('Supprimer cet événement ?')) { extra.events.splice(+dev.dataset.deleteEvent, 1); saveExtra(); closeSheet(); render(); } return; }
+    const dev = e.target.closest('[data-delete-event]'); if (dev) { if (confirm('Supprimer cet événement ?')) { extra.events.splice(+dev.dataset.deleteEvent, 1); saveExtra(); syncCalendarExpenses(); closeSheet(); render(); toast('Événement supprimé · dépense liée retirée'); } return; }
 
     const dy = e.target.closest('[data-day]'); if (dy) return dayDetails(+dy.dataset.day);
     const et = e.target.closest('[data-edit-tx]'); if (et) return txForm(et.dataset.editTx, et.dataset.index);
@@ -2828,7 +3022,7 @@
     if (e.target.id === 'txForm') return saveTx(fd);
     if (e.target.id === 'emojiFreeForm') { setExpenseEmoji(fd.get('etype'), fd.get('eidx'), (fd.get('emoji') || '').trim()); return; }
     if (e.target.id === 'reportForm') { reportExpenseTo(fd.get('idx'), fd.get('date')); return; }
-    if (e.target.id === 'eventForm') { const i = fd.get('idx'); const o = { id: (i !== '' && extra.events[+i]?.id) || uid('ev'), name: (fd.get('name') || '').trim(), date: fd.get('date'), amount: num(fd.get('amount')), note: (fd.get('note') || '').trim() }; if (i === '') extra.events.push(o); else extra.events[+i] = o; saveExtra(); closeSheet(); render(); toast('Événement enregistré'); return; }
+    if (e.target.id === 'eventForm') { const i = fd.get('idx'); const o = { id: (i !== '' && extra.events[+i]?.id) || uid('ev'), name: (fd.get('name') || '').trim(), emoji: (fd.get('emoji') || '🎉').trim() || '🎉', date: fd.get('date'), amount: num(fd.get('amount')), note: (fd.get('note') || '').trim() }; if (i === '') extra.events.push(o); else extra.events[+i] = o; saveExtra(); syncCalendarExpenses(); closeSheet(); render(); toast(o.amount > 0 ? 'Événement enregistré · dépense synchronisée' : 'Événement enregistré'); return; }
     if (e.target.id === 'strategyForm') {
       extra.strategy = {
         capital: Math.max(0, num(fd.get('capital'))),
@@ -2843,7 +3037,7 @@
       };
       stratPreviewRate = null; saveExtra(); closeSheet(); page = 'strategy'; render(); return;
     }
-    if (e.target.id === 'birthdayForm') { const i = fd.get('idx'); const o = { name: fd.get('name').trim(), birthDate: fd.get('birthDate'), budget: num(fd.get('budget')), reminder: num(fd.get('reminder')), note: fd.get('note') }; i === '' ? extra.birthdays.push(o) : extra.birthdays[+i] = o; saveExtra(); closeSheet(); render(); return; }
+    if (e.target.id === 'birthdayForm') { const i = fd.get('idx'); const prev = i !== '' ? extra.birthdays[+i] : null; const o = { id: prev?.id || uid('bd'), name: fd.get('name').trim(), emoji: (fd.get('emoji') || '🎂').trim() || '🎂', birthDate: fd.get('birthDate'), budget: num(fd.get('budget')), reminder: num(fd.get('reminder')), note: fd.get('note') }; i === '' ? extra.birthdays.push(o) : extra.birthdays[+i] = o; saveExtra(); syncCalendarExpenses(); closeSheet(); render(); toast(o.budget > 0 ? 'Anniversaire enregistré · dépense synchronisée' : 'Anniversaire enregistré'); return; }
     if (e.target.id === 'goalForm') {
       const id = fd.get('itemId');
       const existing = id ? goals.find(x => x.id === id) : null;
@@ -2914,7 +3108,7 @@
 
   document.addEventListener('click', e => {
     if (e.target.closest('[data-delete-tx]')) return deleteTx();
-    if (e.target.closest('[data-delete-birthday]')) { const i = +new FormData($('#birthdayForm')).get('idx'); if (confirm('Supprimer cet anniversaire ?')) { extra.birthdays.splice(i, 1); saveExtra(); closeSheet(); render(); } return; }
+    if (e.target.closest('[data-delete-birthday]')) { const i = +new FormData($('#birthdayForm')).get('idx'); if (confirm('Supprimer cet anniversaire ?')) { extra.birthdays.splice(i, 1); saveExtra(); syncCalendarExpenses(); closeSheet(); render(); toast('Anniversaire supprimé · dépense liée retirée'); } return; }
     if (e.target.closest('[data-delete-goal]')) { const id = new FormData($('#goalForm')).get('itemId'); if (confirm('Supprimer cet objectif ?')) { goals = goals.filter(g => g.id !== id); saveGoals(); closeSheet(); render(); } return; }
     if (e.target.closest('[data-delete-pocket]')) { const id = new FormData($('#pocketForm')).get('itemId'); const p = extra.pockets.find(x => x.id === id); if (p && confirm(`Supprimer la poche « ${p.name} » ? Son solde (${eur(p.balance)}) sera transféré vers la première poche restante.`)) { extra.pockets = extra.pockets.filter(x => x.id !== id); if (extra.pockets.length) extra.pockets[0].balance = num(extra.pockets[0].balance) + num(p.balance); saveExtra(); closeSheet(); render(); } return; }
     if (e.target.closest('[data-delete-exchange]')) { const i = +new FormData($('#exchangeForm')).get('idx'); if (confirm('Supprimer cet échange ?')) { extra.exchanges.splice(i, 1); saveExtra(); closeSheet(); render(); } return; }
@@ -2942,5 +3136,13 @@
 
   window.addEventListener('error', e => console.error('Budget Orion', e.error || e.message));
 
+  // Persiste les identifiants/migrations additives (anniversaires, événements, alertes),
+  // puis synchronise leurs éventuelles dépenses liées sans toucher aux historiques manuels.
+  saveExtra();
+  syncCalendarExpenses();
   render();
+  // Les notifications navigateur sont vérifiées à l'ouverture et au retour dans l'app.
+  setTimeout(() => maybeNotifyUpcomingExpenses(false), 900);
+  window.addEventListener('focus', () => maybeNotifyUpcomingExpenses(false));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') maybeNotifyUpcomingExpenses(false); });
 })();
