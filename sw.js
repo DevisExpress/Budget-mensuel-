@@ -1,4 +1,4 @@
-const CACHE='budget-orion-v7-20260828';
+const CACHE='budget-orion-v7.2-20260828';
 const CORE=['./','./index.html','./css/app.css','./css/orion-home.css','./css/orion-expenses.css','./css/orion-planning.css','./css/orion-analysis.css','./css/orion-savings.css','./css/orion-goals.css','./css/orion-consolidation.css','./js/brands.js','./js/app.js','./manifest.webmanifest','./icons/orion-icon.svg','./icons/orion-192.png','./icons/orion-512.png'];
 self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE)).then(()=>self.skipWaiting()));});
 self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});

@@ -78,3 +78,43 @@
   .pl-sum .m { padding-left: 4px !important; padding-right: 4px !important; }
   .pl-sum .m b { font-size: 11.5px !important; }
 }
+
+/* V7.2 — Accueil : "Ce mois en un coup d’œil" EXACTEMENT en 4 colonnes.
+   Chargé en dernier pour neutraliser toute règle responsive antérieure. */
+.home-glance {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  grid-auto-flow: column !important;
+  gap: 2px !important;
+  width: 100% !important;
+  align-items: start !important;
+}
+.home-glance > .home-gl {
+  min-width: 0 !important;
+  width: auto !important;
+  padding: 2px 1px !important;
+  display: block !important;
+  text-align: center !important;
+}
+.home-glance .gi { margin: 0 auto 7px !important; }
+.home-glance .gv,
+.home-glance .gl-lbl,
+.home-glance .gvs {
+  max-width: 100% !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+@media (max-width: 390px) {
+  .home-glance { gap: 0 !important; }
+  .home-glance .gi { width: 36px !important; height: 36px !important; font-size: 16px !important; }
+  .home-glance .gv { font-size: 12px !important; letter-spacing: -.15px; }
+  .home-glance .gl-lbl { font-size: 8.5px !important; }
+  .home-glance .gvs { font-size: 7.5px !important; letter-spacing: -.15px; }
+}
+@media (max-width: 350px) {
+  .home-glance .gi { width: 32px !important; height: 32px !important; font-size: 14px !important; }
+  .home-glance .gv { font-size: 11px !important; }
+  .home-glance .gl-lbl { font-size: 7.8px !important; }
+  .home-glance .gvs { font-size: 7px !important; }
+}
