@@ -118,3 +118,56 @@
   .home-glance .gl-lbl { font-size: 7.8px !important; }
   .home-glance .gvs { font-size: 7px !important; }
 }
+
+/* Accueil clair — octobre 2026. Présentation uniquement, données inchangées. */
+.home-main {
+  background: radial-gradient(ellipse at 0% 100%, #d9f1e4 0%, transparent 58%),
+              linear-gradient(155deg, #fff 25%, #f0faf5 100%);
+  color: var(--ink);
+  border: 1px solid #d6eade;
+  border-radius: 22px;
+  padding: 20px 16px 16px;
+  box-shadow: 0 10px 28px rgba(18, 100, 61, .08);
+}
+.home-main .home-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 12px;
+}
+.home-main .home-col { color: var(--ink); padding: 0; }
+.home-main .home-col:first-child { grid-column: 1 / -1; padding: 0 0 15px 52px; position: relative; border-bottom: 1px solid #dcece3; }
+.home-main .home-col:first-child::before {
+  content: '▱'; position: absolute; left: 0; top: 2px;
+  width: 40px; height: 40px; display: grid; place-items: center;
+  border-radius: 50%; background: #e3f5eb; color: #079653; font-size: 26px;
+}
+.home-main .home-col.center { border: 0; padding: 0; }
+.home-main .home-col:last-child { border-left: 1px solid #dcece3; padding-left: 12px; }
+.home-main .home-col .lbl { text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 650; opacity: 1; }
+.home-main .home-i { color: #78877f; border-color: #a5b6ac; }
+.home-main .home-col .val { font-size: clamp(17px, 4.8vw, 23px); margin: 6px 0; color: var(--ink); }
+.home-main .home-col:first-child .val { color: #078c4b; font-size: clamp(25px, 7.2vw, 34px); letter-spacing: -1px; }
+.home-main .home-col .sub { font-size: 11px; color: #67786f; opacity: 1; line-height: 1.4; }
+.home-main .home-barwrap { margin: 24px 0 10px; }
+.home-main .home-bar { background: #d9efe3; }
+.home-main .home-bar .paid { background: #0ba15b; }
+.home-main .home-bar .rest { background: repeating-linear-gradient(90deg, #b8e4cf 0 5px, #e5f5ed 5px 11px); }
+.home-main .home-bubble { box-shadow: 0 2px 8px #19563412; border: 1px solid #e0eee6; }
+.home-main .home-barrow { color: #53685b; font-size: 10px; opacity: 1; flex-wrap: wrap; gap: 5px 12px; }
+.home-main .home-barrow span { white-space: normal; overflow: visible; }
+.home-main .home-barrow .d1:before { color: #0ba15b; }
+.home-main .home-barrow .d2:before { color: #788b80; }
+.home-main .home-split { background: none; padding: 0; gap: 10px; margin-top: 16px; }
+.home-main .home-split > button { border: 1px solid #d9ece1; border-radius: 16px; background: #ffffffa6; color: var(--ink); padding: 12px 9px; gap: 8px; }
+.home-main .home-split .sep { display: none; }
+.home-main .home-split .ic { background: #e3f5eb; color: #079653; border-radius: 50%; width: 32px; height: 32px; flex-basis: 32px; }
+.home-main .home-split .s-lbl { white-space: normal; font-size: 10px; line-height: 1.35; opacity: 1; color: #53685b; }
+.home-main .home-split .s-val { font-size: 15px; margin-top: 4px; }
+.home-main .home-split .chev { color: #789184; }
+.home-main button:focus-visible { outline: 2px solid #078c4b; outline-offset: 4px; border-radius: 8px; }
+@media(max-width:360px) {
+  .home-main { padding: 17px 12px 14px; }
+  .home-main .home-split > button { padding: 10px 7px; gap: 6px; }
+  .home-main .home-split .ic { width: 26px; height: 26px; flex-basis: 26px; font-size: 15px; }
+  .home-main .home-split .s-val { font-size: 13px; }
+}
