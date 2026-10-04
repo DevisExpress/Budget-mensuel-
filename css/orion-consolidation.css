@@ -197,3 +197,13 @@
   .home-main .home-split .ic { width: 26px; height: 26px; flex-basis: 26px; }
   .home-main .home-split .s-val { font-size: 13px; }
 }
+
+/* Reliability, setup and keyboard navigation. */
+#orionError{position:fixed;top:calc(env(safe-area-inset-top,0px) + 8px);left:12px;right:12px;max-width:680px;margin:auto;background:#fff3d6;color:#4c350b;border:1px solid #e8c16c;border-radius:14px;padding:14px;box-shadow:0 6px 24px #0002;z-index:1000;font-size:14px;line-height:1.45;display:flex;gap:10px;flex-wrap:wrap}
+#orionError span{flex-basis:100%}#orionError button{padding:8px 12px;border:1px solid #d2ae60;border-radius:8px;background:white;min-height:44px}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #176ac0;outline-offset:3px}
+.orion-guide{padding:16px;line-height:1.5;font-size:14px}.orion-guide p{margin:8px 0 12px}.nav small{font-size:10px}.nav button{min-height:44px}.sheet .form label{font-size:14px}.sheet .form input:not([type=checkbox]),.sheet .form select{font-size:16px;min-height:44px}.sheet .form small{font-size:12px;line-height:1.5}.home-fidelity-metrics .metric-lbl{font-size:12px}.home-fidelity-ring small{font-size:10px}
+.home-toast.show{pointer-events:auto;white-space:normal;display:flex;align-items:center;gap:8px;border-radius:18px}
+.home-toast .undo{min-height:44px;flex-shrink:0}
+.form input[type=checkbox]{display:inline-block;width:20px;height:20px;min-height:20px;margin:0 8px 0 0;padding:0;vertical-align:middle}
+.sheet:not(.open){display:none}

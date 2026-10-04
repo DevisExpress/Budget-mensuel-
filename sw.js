@@ -1,6 +1,7 @@
-const CACHE='budget-orion-v7.2-accueil-fidele-20261004';
-const CORE=['./','./index.html','./css/app.css','./css/orion-home.css','./css/orion-expenses.css','./css/orion-planning.css','./css/orion-analysis.css','./css/orion-savings.css','./css/orion-goals.css','./css/orion-consolidation.css','./js/brands.js','./js/app.js','./manifest.webmanifest','./icons/orion-icon.svg','./icons/orion-192.png','./icons/orion-512.png'];
-self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE)).then(()=>self.skipWaiting()));});
-self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()));});
-self.addEventListener('fetch',e=>{if(e.request.method!=='GET')return;e.respondWith(fetch(e.request).then(r=>{const copy=r.clone();caches.open(CACHE).then(c=>c.put(e.request,copy)).catch(()=>{});return r;}).catch(()=>caches.match(e.request).then(r=>r||caches.match('./index.html'))));});
-self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(ws=>{for(const w of ws){if('focus'in w)return w.focus();}return clients.openWindow('./');}));});
+const CACHE='budget-orion-v7.3-corrections-20261004';
+const CORE=['./','./index.html','./css/app.css','./css/orion-home.css','./css/orion-expenses.css','./css/orion-planning.css','./css/orion-analysis.css','./css/orion-savings.css','./css/orion-goals.css','./css/orion-consolidation.css','./js/orion-core.js','./js/brands.js','./js/app.js','./manifest.webmanifest','./icons/orion-icon.svg','./icons/orion-192.png','./icons/orion-512.png','./confidentialite.html','./assistance.html'];
+// Install a complete asset set. Activate after old windows close, avoiding mixed versions.
+self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(CORE))));
+self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('budget-orion-')&&k!==CACHE).map(k=>caches.delete(k))))));
+self.addEventListener('fetch',e=>{if(e.request.method!=='GET'||new URL(e.request.url).origin!==self.location.origin)return;e.respondWith(caches.open(CACHE).then(async c=>{const hit=await c.match(e.request,{ignoreSearch:true});if(hit)return hit;try{return await fetch(e.request);}catch(error){if(e.request.mode==='navigate')return c.match('./index.html');throw error;}}));});
+self.addEventListener('notificationclick',e=>{e.notification.close();e.waitUntil(clients.matchAll({type:'window',includeUncontrolled:true}).then(ws=>{for(const w of ws)if('focus'in w)return w.focus();return clients.openWindow('./');}));});

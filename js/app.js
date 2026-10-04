@@ -10,6 +10,9 @@
    ========================================================================= */
 (() => {
   'use strict';
+  const Core = window.ORION_CORE;
+  try {
+  Core.recover(localStorage); Core.checkStored(localStorage);
 
   /* ---------------------------------------------------------------------
      0. CONSTANTES & UTILITAIRES
@@ -52,7 +55,7 @@
     if (!_toastEl) { _toastEl = document.createElement('div'); _toastEl.className = 'home-toast'; document.body.appendChild(_toastEl); }
     _toastEl.innerHTML = esc(msg) + (undo ? ' <button class="undo" type="button">Annuler</button>' : '');
     _toastEl.classList.add('show');
-    if (undo) { const b = _toastEl.querySelector('.undo'); if (b) b.onclick = () => { _toastEl.classList.remove('show'); try { undo(); } catch (_) {} }; }
+    if (undo) { const b = _toastEl.querySelector('.undo'); if (b) b.onclick = guard(() => { _toastEl.classList.remove('show'); undo(); }); }
     clearTimeout(_toastTimer); _toastTimer = setTimeout(() => _toastEl.classList.remove('show'), undo ? 4200 : 2200);
   }
 
@@ -66,6 +69,7 @@
   const KEY_GOALS = 'orion_v21_goals';
   const KEY_BACKUPS = 'orion_backups_v1';
   const KEY_MIGLOG = 'orion_migrations_log';
+  let lastCommitted = null, actionDepth = 0, dirty = false, deferred = [];
   const ALL_DATA_KEYS = [KEY_BUDGET, ...KEY_BUDGET_LEGACY, KEY_EXTRA, ...KEY_EXTRA_LEGACY, KEY_GOALS];
 
   function migrateMonth(m) {
@@ -84,6 +88,7 @@
     const found = readFirst([KEY_BUDGET, ...KEY_BUDGET_LEGACY]);
     let d = found ? safeParse(found.raw, {}) : {};
     if (!d || typeof d !== 'object') d = {};
+    d = Core.normalizeBudget(d);
     d.monthlyData = d.monthlyData || {};
     if (!Object.keys(d.monthlyData).length && d.years) {
       Object.keys(d.years).forEach(y => { const ms = d.years[y]?.months || {}; Object.keys(ms).forEach(m => { d.monthlyData[`${y}-${p2(+m + 1)}`] = migrateMonth(ms[m]); }); });
@@ -109,6 +114,7 @@
     e.notifications = (e.notifications && typeof e.notifications === 'object') ? e.notifications : {};
     if (e.notifications.enabled == null) e.notifications.enabled = false;
     if (!Array.isArray(e.notifications.leadDays) || !e.notifications.leadDays.length) e.notifications.leadDays = [2, 1];
+    e.categories = Array.isArray(e.categories) ? e.categories : [];
     e.strategy = e.strategy || { capital: 0, monthly: 300, rate: 7 };
     // Migration additive (non destructive) : horizon de projection et taux des 3 scénarios.
     e.strategy.horizon = num(e.strategy.horizon) || 20;
@@ -145,26 +151,28 @@
   }
 
   function loadBackups() { const b = safeParse(localStorage.getItem(KEY_BACKUPS), []); return Array.isArray(b) ? b : []; }
-  function saveBackups() { try { localStorage.setItem(KEY_BACKUPS, JSON.stringify(backups)); } catch { /* quota: ignore silencieusement, ne bloque pas l'app */ } }
+  function saveBackups() { if (lastCommitted) stageState(); else Core.atomicWrite(localStorage, { [KEY_BACKUPS]: JSON.stringify(backups) }); }
 
   function snapshotNow(label, auto) {
     const data = {};
     ALL_DATA_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v !== null) data[k] = v; });
     backups.unshift({ id: uid('bk'), ts: new Date().toISOString(), label: label || 'Sauvegarde', auto: !!auto, data });
-    // on garde un historique raisonnable : 8 auto + toutes les manuelles (max 20 au total)
+    // Conserve toutes les sauvegardes manuelles ; limite seulement les automatiques à huit.
     const manual = backups.filter(b => !b.auto);
     const autos = backups.filter(b => b.auto).slice(0, 8);
-    backups = [...manual, ...autos].sort((a, b) => new Date(b.ts) - new Date(a.ts)).slice(0, 20);
+    backups = [...manual, ...autos].sort((a, b) => new Date(b.ts) - new Date(a.ts));
     saveBackups();
   }
 
   function restoreSnapshot(id) {
-    const bk = backups.find(b => b.id === id);
-    if (!bk) return false;
-    // sécurité : on sauvegarde l'état courant avant d'écraser quoi que ce soit
-    snapshotNow('Avant restauration', true);
-    Object.entries(bk.data).forEach(([k, v]) => localStorage.setItem(k, v));
+    const bk = backups.find(b => b.id === id); if (!bk) return false;
+    const payload = snapshotPayload(bk.data);
+    applyImport(Core.validateBackup(payload));
     return true;
+  }
+  function snapshotPayload(data) {
+    const read = keys => { for (const k of keys) if (data[k] != null) return JSON.parse(data[k]); };
+    return { budget: read([KEY_BUDGET,...KEY_BUDGET_LEGACY]), extra: read([KEY_EXTRA,...KEY_EXTRA_LEGACY]), goals: read([KEY_GOALS]) };
   }
 
   function runMigrations(rawBudget) {
@@ -213,12 +221,53 @@
   const chartData = {}; // stocke les points de données par id de graphique pour les info-bulles au survol
   const key = () => `${year}-${p2(month + 1)}`;
 
-  function saveBudget() { budget.currentYear = year; budget.currentMonth = month; budget.schema = SCHEMA_VERSION; try { localStorage.setItem(KEY_BUDGET, JSON.stringify(budget)); } catch {} Bus.emit('budget:dataChanged', { source: 'budget' }); }
-  // Persiste immédiatement si une migration de schéma vient d'avoir lieu, pour ne pas
-  // la relancer (et resnapshot) à chaque chargement tant qu'aucune autre action n'a sauvegardé.
+  function stateCopy() { return clone({ budget, extra, goals, backups, year, month }); }
+  function restoreState(state) { ({ budget, extra, goals, backups, year, month } = clone(state)); refreshCategories(); }
+  let lastDisk=null;
+  const diskState=()=>Object.fromEntries([KEY_BUDGET,KEY_EXTRA,KEY_GOALS,KEY_BACKUPS].map(k=>[k,localStorage.getItem(k)]));
+  function concurrentError(){const e=Error('Le budget a été modifié dans une autre fenêtre. Recharge-le avant de confirmer une nouvelle modification.');e.name='OrionConcurrentChange';return e;}
+  function commitState() {
+    if (!dirty) return;
+    if(lastDisk && Object.entries(lastDisk).some(([k,v])=>localStorage.getItem(k)!==v))throw concurrentError();
+    budget.currentYear = year; budget.currentMonth = month; budget.schema = SCHEMA_VERSION;
+    Core.validateBackup({budget,extra,goals},false);
+    Core.atomicWrite(localStorage, {
+      [KEY_BUDGET]: JSON.stringify(budget), [KEY_EXTRA]: JSON.stringify(extra),
+      [KEY_GOALS]: JSON.stringify(goals), [KEY_BACKUPS]: JSON.stringify(backups)
+    });
+    dirty = false; lastCommitted = stateCopy(); lastDisk=diskState();
+    Bus.emit('budget:dataChanged', { source: 'commit' });
+  }
+  function stageState() { dirty = true; if (!actionDepth) { try { commitState(); } catch (error) { if (lastCommitted) restoreState(lastCommitted); throw error; } } }
+  function saveBudget() { budget.currentYear = year; budget.currentMonth = month; budget.schema = SCHEMA_VERSION; stageState(); }
+  function saveExtra() { stageState(); }
+  function saveGoals() { stageState(); }
+  function afterCommit(fn) { if (actionDepth) deferred.push(fn); else fn(); }
+  function actionError(error) {
+    let box = document.getElementById('orionError');
+    if (!box) { box = document.createElement('div'); box.id='orionError'; box.setAttribute('role','alert'); document.body.appendChild(box); }
+    box.replaceChildren(); const text=document.createElement('span');text.textContent=error.message || 'Opération interrompue. Aucune modification confirmée.';box.append(text);
+    const close=document.createElement('button');close.textContent='Fermer';close.onclick=()=>box.remove();box.append(close);
+    const exp=document.createElement('button');exp.textContent='Exporter mon budget';exp.onclick=()=>exportData().catch(actionError);box.append(exp);
+    if(error.name==='OrionConcurrentChange'){const reload=document.createElement('button');reload.textContent='Recharger le budget';reload.onclick=()=>location.reload();box.append(reload);}
+  }
+  let asyncAction=false;
+  function guard(fn) {
+    return function (...args) {
+      if(actionDepth){if(asyncAction){args[0]?.preventDefault?.();return;}return fn.apply(this,args);}
+      const before=stateCopy(), body=$('#sheetBody').cloneNode(true), wasOpen=$('#sheet').classList.contains('open'), title=$('#sheetTitle').textContent;
+      const fields=[...$('#sheetBody').querySelectorAll('input,select,textarea')].map(x=>({value:x.value,checked:x.checked}));
+      actionDepth=1;deferred=[];
+      const success=()=>{try{commitState();actionDepth=0;asyncAction=false;const callbacks=deferred;deferred=[];callbacks.forEach(f=>f());}catch(error){failure(error);}};
+      const failure=error=>{actionDepth=0;asyncAction=false;dirty=false;deferred=[];restoreState(before);if(_toastEl)_toastEl.classList.remove('show');try{render();}catch{}if(wasOpen){$('#sheet').inert=false;$('#sheet').setAttribute('aria-hidden','false');$('#sheetTitle').textContent=title;$('#sheetBody').replaceChildren(...body.childNodes);$('#sheetBody').querySelectorAll('input,select,textarea').forEach((x,i)=>{if(x.type!=='file')x.value=fields[i].value;x.checked=fields[i].checked;});$('#sheet').classList.add('open');$('#overlay').classList.add('open');}actionError(error);};
+      try { const result=fn.apply(this,args);if(result && typeof result.then==='function'){asyncAction=true;return result.then(success,failure);}success(); } catch(error){failure(error);}
+    };
+  }
+  const BASE_CATS = { ...CATS };
+  function refreshCategories() { Object.keys(CATS).forEach(k=>delete CATS[k]);Object.assign(CATS,BASE_CATS);(extra.categories||[]).forEach(c=>{CATS[c.id]=c.name;COLORS[c.id]='#168957';}); }
+  refreshCategories(); lastCommitted=stateCopy();lastDisk=diskState();
+  window.addEventListener('storage',e=>{if(lastDisk && Object.hasOwn(lastDisk,e.key))actionError(concurrentError());});
   if (budget.__justMigrated) { delete budget.__justMigrated; saveBudget(); }
-  function saveExtra() { try { localStorage.setItem(KEY_EXTRA, JSON.stringify(extra)); } catch {} Bus.emit('budget:dataChanged', { source: 'extra' }); }
-  function saveGoals() { try { localStorage.setItem(KEY_GOALS, JSON.stringify(goals)); } catch {} Bus.emit('budget:dataChanged', { source: 'goals' }); }
 
   /* ---------------------------------------------------------------------
      2. MOTEUR DE RÉCURRENCE
@@ -245,14 +294,14 @@
       if (occ == null) return;
       const list = t.kind === 'income' ? mo.income : mo.expenses;
       if (list.some(r => r.templateId === t.id)) return;
-      const day = Math.min(num(t.dueDay) || 1, lastDayOfMonth(+k.slice(0, 4), +k.slice(5, 7)));
       const ov = (t.overrides && t.overrides[k]) || null;
+      const day = Math.min(num(ov?.dueDay ?? t.dueDay) || 1, lastDayOfMonth(+k.slice(0, 4), +k.slice(5, 7)));
       const nr = {
         name: ov?.name || t.name,
         amount: num(ov ? ov.amount : t.amount),
         cat: ov?.cat || t.cat || 'autres',
         paid: false, paidDate: '',
-        dueDate: t.kind === 'income' ? '' : `${k}-${p2(day)}`,
+        dueDate: `${k}-${p2(day)}`,
         templateId: t.id, recurring: true, auto: !!t.auto, createdPeriod: k
       };
       if (t.customEmoji) nr.customEmoji = t.customEmoji;
@@ -278,21 +327,15 @@
       const occ = occurrenceIndex(t, k);
       if (occ == null) return;
       const list = t.kind === 'income' ? fake.income : fake.expenses;
-      const day = Math.min(num(t.dueDay) || 1, lastDayOfMonth(+k.slice(0, 4), +k.slice(5, 7)));
       const ov = (t.overrides && t.overrides[k]) || null;
-      list.push({ name: ov?.name || t.name, amount: num(ov ? ov.amount : t.amount), cat: ov?.cat || t.cat || 'autres', paid: false, dueDate: t.kind === 'income' ? '' : `${k}-${p2(day)}`, templateId: t.id, projected: true });
+      const day = Math.min(num(ov?.dueDay ?? t.dueDay) || 1, lastDayOfMonth(+k.slice(0, 4), +k.slice(5, 7)));
+      list.push({ name: ov?.name || t.name, amount: num(ov ? ov.amount : t.amount), cat: ov?.cat || t.cat || 'autres', paid: false, dueDate: `${k}-${p2(day)}`, templateId: t.id, projected: true });
     });
     desiredCalendarExpensesForMonth(k).forEach(x => fake.expenses.push({ ...x, paid:false, paidDate:'', projected:true }));
     return fake;
   }
 
-  function totals(m = monthObj()) {
-    let tin = 0, tex = 0, pin = 0, pex = 0;
-    (m.income || []).forEach(r => { tin += num(r.amount); if (r.paid || r.auto || /salaire|paie/i.test(r.name || '')) pin += num(r.amount); });
-    (m.expenses || []).forEach(r => { tex += num(r.amount); if (r.paid) pex += num(r.amount); });
-    const sav = num(m.savings?.amount);
-    return { tin, tex, pin, pex, sav, current: pin - pex, final: pin - tex, future: tex - pex, remaining: pin - tex, pct: tin ? Math.round((tex / tin) * 100) : 0, paidPct: tex ? Math.round((pex / tex) * 100) : 0 };
-  }
+  function totals(m = monthObj()) { return Core.totals(m); }
 
   function catTotals(m = monthObj(), onlyPaid = true) {
     const o = {};
@@ -300,7 +343,7 @@
     return o;
   }
 
-  function isAutoIncome(r) { return !!(r && r.auto) || /salaire|paie|pay/i.test(r?.name || ''); }
+  function isAutoIncome(r) { return r?.paid === true; } // Compatibility helper: names never confirm receipt.
 
   /* Identité visuelle d'une dépense — ne renvoie JAMAIS de case vide.
      Priorité : 1) emoji personnalisé (ligne, sinon modèle) 2) logo de marque
@@ -391,7 +434,7 @@
       const id = `${r.sourceType}|${r.sourceEventId}|${r.sourceOccurrenceDate}`;
       const d = wanted.get(id);
       if (!d || seen.has(id)) {
-        if (!d && r.paid) {
+        if (r.paid) {
           // Une dépense déjà réellement payée devient un historique normal : on ne détruit
           // jamais une sortie d'argent réelle si l'événement source est déplacé/supprimé.
           r.sourceArchived = true; r.autoEventExpense = false; kept.push(r);
@@ -889,7 +932,7 @@
     [k0, monthKeyAdd(k0,1)].forEach(k => {
       const mo = budget.monthlyData[k] || projectMonth(k);
       (mo.expenses || []).forEach(r => { if (!r.paid && r.dueDate && r.dueDate <= target && r.dueDate >= today()) bal -= num(r.amount); });
-      if (k !== k0) (mo.income || []).forEach(r => { if ((r.paid || r.auto || /salaire|paie/i.test(r.name||'')) && r.dueDate && r.dueDate <= target) bal += num(r.amount); });
+      (mo.income || []).forEach(r => { if ((k !== k0 || !r.paid) && r.dueDate && r.dueDate <= target && r.dueDate >= today()) bal += num(r.amount); });
     });
     return bal;
   }
@@ -915,6 +958,7 @@
     } catch (_) { return false; }
   }
   async function maybeNotifyUpcomingExpenses(force=false) {
+    if(window.ORION_NATIVE?.isNative){try{await window.ORION_NATIVE.syncReminders();}catch{actionError(Error('Les rappels n’ont pas pu être programmés. Vérifie les autorisations et réessaie.'));}return;}
     const set = notificationSettings(); if (!set.enabled) return;
     const map = cleanupNotified(readNotified()); let changed=false;
     for (const item of notificationExpenses()) {
@@ -925,6 +969,7 @@
     if (changed) try { localStorage.setItem(KEY_NOTIFIED, JSON.stringify(map)); } catch {}
   }
   async function enableNotifications() {
+    if(window.ORION_NATIVE?.isNative){const ok=await window.ORION_NATIVE.enableReminders();notificationSettings().enabled=ok;saveExtra();afterCommit(()=>{window.ORION_NATIVE.syncReminders().catch(()=>actionError(Error('Programmation des rappels indisponible.')));toast(ok?'Rappels locaux autorisés':'Autorisation refusée : les alertes restent visibles dans Orion');});return ok;}
     if (!('Notification' in window)) { toast('Notifications non prises en charge par ce navigateur'); return false; }
     let perm = Notification.permission;
     if (perm === 'default') { try { perm = await Notification.requestPermission(); } catch (_) {} }
@@ -935,8 +980,8 @@
   }
   function notificationCenter() {
     const list = notificationExpenses();
-    const perm = ('Notification' in window) ? Notification.permission : 'unsupported';
-    openSheet('🔔 Alertes de dépenses', `<div class="insight">Budget Orion te prévient 1 à 2 jours avant les dépenses prévues. Sur iPhone, installe l’app sur l’écran d’accueil et autorise les notifications pour la meilleure fiabilité.</div>
+    const perm = window.ORION_NATIVE?.isNative?(notificationSettings().enabled?'granted':'default'):('Notification' in window)?Notification.permission:'unsupported';
+    openSheet('🔔 Alertes de dépenses', `<div class="insight">${window.ORION_NATIVE?.isNative?'Autorise les rappels locaux pour les échéances à venir. Le téléphone peut retarder ou masquer les alertes selon ses réglages.':'Les alertes web sont vérifiées à l’ouverture et au retour dans Orion. Elles ne sont pas garanties quand l’application est fermée.'}</div>
       <section class="card list">${list.length ? list.map(x => { const id=identityOf(x.r); return `<div class="row"><div class="brandmark ${id.cls}">${id.mark}</div><div class="row-main"><b>${esc(x.r.name)}</b><small>${x.days===1?'Demain':'Dans '+x.days+' jours'} · ${dateLabel(x.r.dueDate)}</small></div><b>-${eur(x.r.amount)}</b></div>`; }).join('') : '<div class="empty">Aucune dépense à notifier dans les 2 prochains jours.</div>'}</section>
       <button class="action" type="button" data-enable-notifications>${perm==='granted' && notificationSettings().enabled ? '✓ Notifications activées' : 'Activer les notifications'}</button>
       ${notificationSettings().enabled ? '<button class="ghost" type="button" data-test-notifications>Tester maintenant</button><button class="ghost danger" type="button" data-disable-notifications>Désactiver</button>' : ''}`);
@@ -984,8 +1029,8 @@
     const line = (l, v, c, attr) => `<div class="row${attr ? ' clickable' : ''}" ${attr || ''}><div class="row-main"><b>${l}</b></div><b class="${c || ''}">${v}</b></div>`;
     let title = 'Détail', body = '';
     if (kind === 'solde') {
-      title = 'Solde disponible';
-      body = `<section class="card">${line('Revenus reçus', eur(t.pin))}${line('Dépenses déjà prélevées', '- ' + eur(t.pex), 'neg')}${line('= Solde disponible', eur(t.current))}</section><div class="insight">L’argent réellement présent : revenus déjà reçus moins dépenses déjà prélevées.</div>`;
+      title = 'Solde du mois';
+      body = `<section class="card">${line('Solde au début du mois',eur(t.opening))}${line('Revenus reçus', eur(t.pin))}${line('Dépenses réglées', '- ' + eur(t.pex), 'neg')}${line('Épargne sortie du compte','- '+eur(t.outSaving),'neg')}${line('= Solde du mois', eur(t.current))}</section><div class="insight">Estimation à partir du solde de départ et des opérations saisies. Vérifie ces informations avec ton relevé. <button class="ghost" data-opening-balance>Régler le solde de départ</button></div>`;
     } else if (kind === 'engage') {
       title = 'Argent déjà engagé';
       const items = (mo.expenses || []).filter(r => !r.paid).slice().sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
@@ -994,7 +1039,7 @@
         <section class="card list">${items.length ? items.map(r => { const idx = mo.expenses.indexOf(r); const br = brandOf(r.name, r.cat); const di = dueInfo(r); return `<div class="row clickable" data-edit-tx="expense" data-index="${idx}"><div class="brandmark ${br.cls}">${br.mark}</div><div class="row-main"><b>${esc(r.name)}</b><small>${di.label}${r.dueDate ? ' · ' + dateLabel(r.dueDate) : ''}</small></div><b>-${eur(r.amount)}</b></div>`; }).join('') : '<div class="empty">✓ Tout est réglé pour ce mois.</div>'}</section>`;
     } else if (kind === 'projection') {
       title = 'Projection fin de mois';
-      body = `<section class="card">${line('Revenus reçus', eur(t.pin))}${line('Dépenses totales prévues', '- ' + eur(t.tex), 'neg')}${line('= Projection', eur(t.final))}</section><div class="insight">Estimation si toutes les dépenses prévues se prélèvent et sans nouveau revenu. Revenus encore à recevoir : ${eur(t.tin - t.pin)}.</div>`;
+      body = `<section class="card">${line('Solde de départ',eur(t.opening))}${line('Revenus reçus et attendus', eur(t.tin))}${line('Dépenses prévues et réglées', '- ' + eur(t.tex), 'neg')}${line('Épargne sortie du compte','- '+eur(t.outSaving),'neg')}${line('= Projection', eur(t.final))}</section><div class="insight">Estimation si les revenus attendus sont reçus et les dépenses prévues sont réglées. Les opérations non saisies ne sont pas incluses. Revenus encore à recevoir : ${eur(t.tin - t.pin)}.</div>`;
     } else if (kind === 'revenus') {
       title = 'Revenus reçus';
       const inc = (mo.income || []);
@@ -1014,6 +1059,8 @@
     setTitle('Budget Orion');
     const t = totals(), mo = monthObj();
     const solde = t.current, engage = t.tex, aPayer = t.future, projection = t.final;
+    const pendingRecognized=mo.income.filter(r=>!r.paid && (r.auto || /salaire|paie|pay/i.test(r.name||''))).length;
+    const setupHint=(!mo.income.length&&!mo.expenses.length)?'<section class="card orion-guide"><b>Prépare ton premier budget</b><p>Point de départ, revenus, charges et objectif : commence avec les informations que tu connais.</p><button class="action" data-setup>Bien démarrer</button></section>':pendingRecognized?'<section class="card orion-guide"><b>Vérifie tes revenus reçus</b><p>Les revenus reconnus automatiquement par les anciennes versions restent enregistrés, mais seuls ceux marqués reçus comptent désormais dans le solde.</p><button class="ghost" data-home-explain="revenus">Vérifier les statuts</button></section>':'';
     const paidPct = t.tex > 0 ? Math.max(0, Math.min(100, Math.round((t.pex / t.tex) * 100))) : 0;
     const bubbleLeft = Math.max(8, Math.min(92, paidPct));
     const last = lastDayOfMonth(year, month);
@@ -1061,13 +1108,14 @@
       : `<button class="home-smart sv-topay clickable-card" data-edit-month-saving><span class="badge">🐷</span><div class="st">Épargne ce mois</div><div class="sb" style="font-size:15px;color:#f0932b">À valider</div><div class="ss">${sv.engagement > 0 ? 'Engagement : ' + eur(sv.engagement) : 'Confirme ton versement'}</div></button>`;
 
     $('#view').innerHTML = `<div class="stack">
+      ${setupHint}
       <section class="home-main">
         <div class="home-fidelity-top">
           <button class="home-fidelity-balance" data-home-explain="solde">
             <span class="home-fidelity-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7H5a2 2 0 0 1 0-4h12v4M3 5v14a2 2 0 0 0 2 2h15V7"/><path d="M20 12h-5v5h5M16.5 14.5h.1"/></svg></span>
-            <span class="lbl">Solde disponible <span class="home-i">i</span></span>
+            <span class="lbl">Solde du mois <span class="home-i">i</span></span>
             <span class="val">${eur(solde)}</span>
-            <span class="sub">Argent réellement dispo sur ton compte</span>
+            <span class="sub">Après les opérations reçues et réglées</span>
           </button>
           <div class="home-fidelity-summary">
             <button class="home-fidelity-ring" data-home-explain="engage" aria-label="${paidPct}% des dépenses prévues réglées. Voir le détail des dépenses.">
@@ -1308,7 +1356,7 @@
         <button type="button" data-report="${idx}" data-date="${plus(14)}">Dans 14 jours · ${dateLabel(plus(14))}</button>
         <button type="button" data-report="${idx}" data-date="${nextMonth1()}">Début du mois prochain · ${dateLabel(nextMonth1())}</button>
       </div>
-      <form class="form" id="reportForm"><input type="hidden" name="idx" value="${idx}"><label>Ou choisir une date<input type="date" name="date" value="${r.dueDate || today()}"></label><button class="action">Reporter</button></form>
+      <form class="form" id="reportForm"><input type="hidden" name="idx" value="${idx}"><label>Ou choisir une date<input type="date" name="date" value="${r.dueDate || iso(year,month,Math.min(new Date().getDate(),lastDayOfMonth(year,month)))}"></label><button class="action">Reporter</button></form>
     `);
   }
   function reportExpenseTo(idx, newDate) {
@@ -1921,9 +1969,12 @@
   /* Réconciliation poche (idempotente) : évite tout double comptage à la re-validation. */
   function svApplyAllocation(k, newAlloc) {
     const sv = budget.monthlyData[k].savings; const old = (sv && sv.alloc) || {};
-    for (const pid in old) { const p = (extra.pockets || []).find(x => x.id === pid); if (p) p.balance = num(p.balance) - num(old[pid]); }
-    for (const pid in newAlloc) { const p = (extra.pockets || []).find(x => x.id === pid); if (p) p.balance = num(p.balance) + num(newAlloc[pid]); }
-    saveExtra();
+    const next=new Map((extra.pockets||[]).map(p=>[p.id,Core.cents(p.balance)]));
+    for(const pid in old)if(next.has(pid))next.set(pid,next.get(pid)-Core.cents(old[pid]));
+    for(const pid in newAlloc)if(next.has(pid))next.set(pid,next.get(pid)+Core.cents(newAlloc[pid]));
+    if([...next.values()].some(v=>v<0))throw Error('Cette correction rendrait une poche négative. Vérifie son solde et les transferts déjà effectués avant de modifier cette validation.');
+    (extra.pockets||[]).forEach(p=>p.balance=next.get(p.id)/100);
+    // Saved with the monthly validation in the same recoverable commit.
   }
 
   function renderSavings() {
@@ -2081,6 +2132,7 @@
       <label>Combien as-tu réellement épargné ?<input type="number" min="0" step="0.01" name="amount" value="${cur}" placeholder="Ex : ${Math.round(planned) || 200}"></label>
       <div class="sv-quick">${[planned, planned * 0.75, planned * 0.5, 0].map(v => `<button type="button" data-sv-quick="${Math.round(v)}">${Math.round(v)} €</button>`).join('')}</div>
       <label>Vers quelle poche ? (optionnel)<select name="pocket"><option value="">— Ne pas affecter —</option>${(extra.pockets || []).map(p => `<option value="${p.id}" ${(sv.alloc && sv.alloc[p.id]) ? 'selected' : ''}>${esc(p.emoji)} ${esc(p.name)}</option>`).join('')}</select></label>
+      <label><input type="checkbox" name="fromAccount" ${sv.fromAccount ? 'checked' : ''}> Argent transféré hors du compte suivi</label><small>Une simple réservation dans une poche ne change pas le solde du compte.</small>
       <label>Date de validation<input type="date" name="date" value="${sv.date || today()}"></label>
       <button class="action" name="act" value="save">Valider ce mois</button>
       ${sv.paid ? '<button type="button" class="ghost danger" data-cancel-validation="' + k + '">Annuler la validation</button>' : '<button type="button" class="ghost" data-sv-nothing="' + k + '">Pas ce mois-ci (0 €)</button>'}
@@ -2569,9 +2621,9 @@
     $('#view').innerHTML = `<div class="stack">
       <section class="card menu-profile"><div class="avatar">●</div><div><b>Mon Budget</b><br><small style="color:var(--mut)">Gérez votre budget facilement</small></div></section>
       <div><div class="group-title">Gestion</div><section class="card menu">
-        ${menuRow('▣', 'Comptes &amp; Budget', '', 'data-info="Comptes & Budget"')}
-        ${menuRow('▦', 'Catégories', Object.values(CATS).join(' · '), 'data-info="Catégories"')}
-        ${menuRow('▰', 'Moyens de paiement', '', 'data-info="Moyens de paiement"')}
+        ${menuRow('◎','Bien démarrer / vérifier mon budget','','data-setup')}
+        ${menuRow('▣','Solde de départ du mois','','data-opening-balance')}
+        ${menuRow('▦','Catégories et enveloppes','','data-envelopes')}
         ${menuRow('↻', 'Règles de récurrence', `${(budget.recurringTemplates||[]).length} actives`, 'data-open-recurring')}
       </section></div>
       <div><div class="group-title">Outils &amp; sauvegardes</div><section class="card menu">
@@ -2592,9 +2644,8 @@
       </section></div>
       <div><div class="group-title">Application</div><section class="card menu">
         ${menuRow('🔔', 'Alertes de dépenses', notificationSettings().enabled ? 'Activées · 1 à 2 jours avant' : 'À activer', 'data-notification-center')}
-        ${menuRow('🎨', 'Apparence', 'Thème clair vert doux (par défaut)', 'data-info="Apparence"')}
         ${menuRow('❓', 'Aide', '', 'data-info="Aide"')}
-        ${menuRow('ℹ️', 'À propos de Budget Orion', 'Version ' + SCHEMA_VERSION, 'data-info="À propos"')}
+        ${menuRow('ℹ️', 'À propos de Budget Orion', 'Version 7.3 — données v' + SCHEMA_VERSION, 'data-info="À propos"')}
       </section></div>
     </div>`;
   }
@@ -2604,7 +2655,7 @@
     $('#view').innerHTML = `<div class="stack">
       <div class="sec-head"><button class="link" data-go="plus">‹ Retour</button><button class="link" data-make-backup>＋ Sauvegarder maintenant</button></div>
       <div class="insight">Une sauvegarde automatique est créée avant chaque migration de données et avant chaque restauration ou import. Restaurer un point ne supprime rien : ton état actuel est lui aussi sauvegardé avant.</div>
-      <section class="card list">${backups.length ? backups.map(b => `<div class="row"><div class="row-main"><b>${esc(b.label)}</b><small>${new Date(b.ts).toLocaleString('fr-FR')} ${b.auto ? '· auto' : '· manuelle'}</small></div><button class="mini-action" data-restore-backup="${b.id}">Restaurer</button></div>`).join('') : '<div class="empty">Aucune sauvegarde pour le moment.</div>'}</section>
+      <section class="card list">${backups.length ? backups.map(b => `<div class="row"><div class="row-main"><b>${esc(b.label)}</b><small>${new Date(b.ts).toLocaleString('fr-FR')} ${b.auto ? '· auto' : '· manuelle'}</small></div><button class="mini-action" data-restore-backup="${b.id}">Restaurer</button><button class="mini-action" data-delete-backup="${b.id}" aria-label="Supprimer ce point de sauvegarde">×</button></div>`).join('') : '<div class="empty">Aucune sauvegarde pour le moment.</div>'}</section>
     </div>`;
   }
 
@@ -2645,8 +2696,9 @@
   /* ---------------------------------------------------------------------
      11. SHEETS (panneaux d'action)
      ------------------------------------------------------------------- */
-  function openSheet(title, html) { $('#sheetTitle').textContent = title; $('#sheetBody').innerHTML = html; $('#overlay').classList.add('open'); $('#sheet').classList.add('open'); }
-  function closeSheet() { $('#overlay').classList.remove('open'); $('#sheet').classList.remove('open'); }
+  let sheetReturnFocus=null;
+  function openSheet(title, html) { if(!$('#sheet').classList.contains('open'))sheetReturnFocus=document.activeElement;$('#sheet').inert=false;$('#sheet').setAttribute('aria-hidden','false'); $('#sheetTitle').textContent = title; $('#sheetBody').innerHTML = html; $('#overlay').classList.add('open'); $('#sheet').classList.add('open');requestAnimationFrame(()=>$('#sheetBody').querySelector('input:not([type=hidden]),select,textarea,button,a')?.focus()); }
+  function closeSheet() { $('#overlay').classList.remove('open');$('#sheet').classList.remove('open');$('#sheet').setAttribute('aria-hidden','true');$('#sheet').inert=true;if(sheetReturnFocus?.isConnected)sheetReturnFocus.focus(); }
 
   function txForm(type = 'expense', idx = '', install = false) {
     const r = idx === '' ? {} : monthObj()[type === 'income' ? 'income' : 'expenses'][+idx] || {};
@@ -2655,10 +2707,10 @@
     const brand = brandOf(r.name || '', r.cat);
     openSheet(idx === '' ? 'Ajouter une transaction' : 'Modifier la transaction', `<form class="form" id="txForm">
       <input type="hidden" name="type" value="${type}"><input type="hidden" name="idx" value="${idx}">
-      <label>Type<select name="kind"><option value="expense" ${type === 'expense' ? 'selected' : ''}>Dépense</option><option value="income" ${type === 'income' ? 'selected' : ''}>Revenu</option></select></label>
+      <label>Type<select name="kind"><option value="expense" ${type === 'expense' ? 'selected' : idx!==''?'disabled':''}>Dépense</option><option value="income" ${type === 'income' ? 'selected' : idx!==''?'disabled':''}>Revenu</option></select></label>
       <label>Libellé<input name="name" id="txName" required value="${esc(r.name || '')}" autocomplete="off"></label>
       ${brand.matched ? `<div class="brand-hint"><span class="brandmark ${brand.cls}">${brand.mark}</span> Reconnu : <b>${esc(brand.label)}</b></div>` : ''}
-      <div class="two"><label>Montant (€)<input type="number" step="0.01" name="amount" required value="${num(r.amount) || ''}"></label><label>Date prévue<input type="date" name="date" value="${r.dueDate || today()}"></label></div>
+      <div class="two"><label>Montant (€)<input type="number" min="0" step="0.01" name="amount" required value="${num(r.amount) || ''}"></label><label>Date prévue<input type="date" name="date" value="${r.dueDate || iso(year,month,Math.min(new Date().getDate(),lastDayOfMonth(year,month)))}"></label></div>
       <label>Catégorie<select name="cat">${Object.keys(CATS).map(k => `<option value="${k}" ${(r.cat || brand.suggestedCat) === k ? 'selected' : ''}>${CATS[k]}</option>`).join('')}</select></label>
       <label>Récurrence<select name="recur">
         <option value="once" ${recur === 'once' ? 'selected' : ''}>Ponctuelle</option>
@@ -2741,6 +2793,7 @@
       <div class="insight">Renseigne le montant réellement mis de côté en ${ML[month].toLowerCase()} ${year}.</div>
       <label>Montant épargné (€)<input type="number" min="0" step="0.01" name="amount" value="${num(sv.amount) || ''}" placeholder="Ex : 250"></label>
       <label>Vers quelle poche ?<select name="pocket"><option value="">— Ne pas affecter —</option>${extra.pockets.map(p => `<option value="${p.id}">${esc(p.emoji)} ${esc(p.name)}</option>`).join('')}</select></label>
+      <label><input type="checkbox" name="fromAccount" ${sv.fromAccount ? 'checked' : ''}> Argent transféré hors du compte suivi</label>
       <label>Date du versement<input type="date" name="date" value="${sv.date || today()}"></label>
       <label><input type="checkbox" name="paid" ${sv.paid ? 'checked' : ''}> Versement effectué</label>
       <button class="action">Enregistrer l’épargne</button></form>`);
@@ -2781,34 +2834,52 @@
     openSheet(CATS[cat] || cat, `<section class="detail-total mint"><small>Total ${ML[month].toLowerCase()}</small><h2 style="margin:4px 0">${eur(sum)}</h2></section><section class="card list">${rows.length ? rows.map(x => rowTx(x.r, 'expense', x.i)).join('') : '<div class="empty">Aucune dépense payée dans cette catégorie ce mois-ci.</div>'}</section>`);
   }
 
-  function info(msg) { openSheet(msg, `<div class="empty">Cette rubrique conserve le visuel de la maquette. Elle sera enrichie sans jamais modifier les données existantes.</div>`); }
+  function setupSheet() {
+    openSheet('Bien démarrer / vérifier mon budget', `<div class="stack"><p>Commence avec le mois affiché. Les revenus attendus restent prévus jusqu’à ce que tu les marques reçus.</p><button class="action" data-opening-balance>1. Vérifier le solde au début du mois</button><button class="ghost" data-add-income>2. Ajouter mes revenus</button><button class="ghost" data-add-tx>3. Ajouter mes dépenses et récurrences</button><button class="ghost" data-envelopes>4. Préparer mes enveloppes</button><button class="ghost" data-add-goal>5. Préparer un objectif</button><p>Fais ensuite une sauvegarde depuis Plus. Les données du site et celles d’une application installée depuis un store ont des stockages séparés.</p></div>`);
+  }
+  function openingBalanceSheet() {
+    const m=monthObj(),prev=budget.monthlyData[monthKeyAdd(key(),-1)];
+    openSheet('Solde au début du mois', `<form class="form" id="openingForm"><p>Saisis le solde au premier jour de ${ML[month].toLowerCase()} ${year}, avant les opérations du mois. Ne saisis pas le solde d’aujourd’hui si ces opérations sont déjà dans Orion.</p><label>Solde de départ (€)<input name="amount" type="number" step="0.01" required value="${num(m.meta?.openingBalance)}"></label>${prev?`<button type="button" class="ghost" data-carry-balance="${totals(prev).current}">Reprendre ${eur(totals(prev).current)} du mois précédent</button><small>Valeur calculée depuis les opérations saisies. Vérifie-la sur ton relevé.</small>`:''}<button class="action">Enregistrer le solde de départ</button></form>`);
+  }
+  function envelopesSheet() {
+    const m=monthObj(),limits=m.meta?.categoryBudgets||{},spent=catTotals(m,true),planned=catTotals(m,false);
+    openSheet('Catégories et enveloppes du mois', `<form class="form" id="envelopesForm"><p>Fixe une limite par catégorie pour ${ML[month].toLowerCase()}. Le restant tient compte de toutes les dépenses saisies, prévues et réglées. Ces enveloppes ne déplacent pas ton argent.</p>${Object.entries(CATS).map(([id,name])=>`<label>${esc(name)}<input type="number" min="0" step="0.01" name="${esc(id)}" value="${limits[id]??''}" placeholder="Pas de limite"></label><small>Réglé : ${eur(spent[id]||0)} · Total prévu : ${eur(planned[id]||0)}${limits[id]!=null?' · Restant : '+eur(limits[id]-(planned[id]||0)):''}</small>`).join('')}<button class="action">Enregistrer mes enveloppes</button></form><button class="ghost" data-add-category>Ajouter une catégorie</button>`);
+  }
+  function info(msg) {
+    const help=`<div class="stack"><p>Le solde du mois est calculé : départ + revenus reçus − dépenses réglées − épargne réellement sortie du compte. La projection ajoute les revenus attendus et retranche les dépenses prévues.</p><p>Le nom « Salaire » ne confirme jamais un encaissement. Coche « Déjà payé / reçu » uniquement après réception.</p><p>Pour l’épargne, une affectation dans une poche est une réservation. Coche « Argent transféré hors du compte suivi » seulement si le compte a été débité.</p><p>Dans Plus, tu peux régler le solde de départ et les enveloppes, puis exporter un fichier JSON. Conserve une copie externe avant changement de téléphone.</p><p>${window.ORION_NATIVE?.isNative?'Les rappels locaux se programment avec ton autorisation pour les échéances à venir. Leur affichage dépend des réglages de ton téléphone.':'Les alertes web sont vérifiées à l’ouverture et au retour dans l’app. Elles ne constituent pas un rappel garanti lorsque l’app est fermée.'}</p><p><a href="./confidentialite.html">Confidentialité et stockage</a> · <a href="./assistance.html">Assistance</a></p></div>`;
+    openSheet(msg,msg==='Aide'?help:`<div class="stack"><p>Budget Orion 7.3 — suivi budgétaire personnel avec saisie manuelle. Aucun compte bancaire connecté.</p><p>Les simulations sont des hypothèses ; elles ne garantissent aucun rendement.</p><p><a href="./confidentialite.html">Confidentialité</a> · <a href="./assistance.html">Assistance</a></p></div>`);
+  }
 
-  function exportData() {
+  async function exportData() {
     const payload = { budget, goals, extra, backups, exported: new Date().toISOString(), schema: SCHEMA_VERSION };
+    if(window.ORION_NATIVE?.isNative)return window.ORION_NATIVE.exportBackup(payload,`budget-orion-${today()}.json`);
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `budget-orion-${today()}.json`; a.click(); URL.revokeObjectURL(a.href);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `budget-orion-${today()}.json`; document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),60000);
   }
 
   function importData() { openSheet('Importer une sauvegarde', `<form class="form" id="importForm"><label>Fichier JSON<input type="file" name="file" accept="application/json"></label><div class="insight">L’import valide le fichier puis crée d’abord une sauvegarde de sécurité de tes données actuelles. Un fichier invalide n’écrasera jamais tes données.</div><button class="action">Importer</button></form>`); }
 
-  function isValidBackupPayload(obj) {
-    if (!obj || typeof obj !== 'object') return false;
-    if (obj.budget && typeof obj.budget !== 'object') return false;
-    if (obj.goals && !Array.isArray(obj.goals)) return false;
-    if (obj.extra && typeof obj.extra !== 'object') return false;
-    return !!(obj.budget || obj.goals || obj.extra);
+  function isValidBackupPayload(obj) { try { Core.validateBackup(obj); return true; } catch { return false; } }
+  function applyImport(input) {
+    const obj=Core.validateBackup(input);
+    snapshotNow('Avant import / restauration',true);
+    const safety=clone(backups);
+    if(obj.budget){budget=Core.normalizeBudget(obj.budget);budget.schema=SCHEMA_VERSION;year=Number.isInteger(+budget.currentYear)?+budget.currentYear:year;month=Number.isInteger(+budget.currentMonth)?+budget.currentMonth:month;}
+    if(obj.goals)goals=clone(obj.goals);
+    if(obj.extra)extra={...loadExtra(),...clone(obj.extra)};
+    const history=[...safety,...(obj.backups||[])],seen=new Set();backups=history.filter(b=>{const id=b.id||JSON.stringify(b.data);if(seen.has(id))return false;seen.add(id);return true;});
+    refreshCategories();saveBudget();saveGoals();saveExtra();
   }
+  /* Recurrences preserve unrelated rows and recorded payments. */
 
-  /* ---------------------------------------------------------------------
-     12. ENREGISTREMENT DES TRANSACTIONS (avec portée d'édition récurrente)
-     ------------------------------------------------------------------- */
   function splitTemplateForward(tpl, fromKey, newValues) {
     // termine l'ancien template la veille de fromKey, crée un nouveau template à partir de fromKey
+    const originalEnd=tpl.endDate, futureSkips=(tpl.skipMonths||[]).filter(k=>k>=fromKey), futureOverrides=Object.fromEntries(Object.entries(tpl.overrides||{}).filter(([k])=>k>=fromKey));
     const prevKey = monthKeyAdd(fromKey, -1);
     const [py, pm] = prevKey.split('-').map(Number);
     tpl.endDate = `${prevKey}-${p2(lastDayOfMonth(py, pm - 1))}`;
     const occIdx = occurrenceIndex({ ...tpl, endDate: null }, fromKey);
-    const newTpl = { ...clone(tpl), id: uid('tpl'), startDate: `${fromKey}-01`, endDate: null, skipMonths: [], overrides: {} };
+    const newTpl = { ...clone(tpl), id: uid('tpl'), startDate: `${fromKey}-01`, endDate: originalEnd||null, skipMonths: futureSkips, overrides: futureOverrides };
     if (num(tpl.installments) > 0 && occIdx != null) newTpl.installments = Math.max(0, num(tpl.installments) - occIdx);
     Object.assign(newTpl, newValues);
     budget.recurringTemplates.push(newTpl);
@@ -2816,94 +2887,65 @@
   }
 
   function saveTx(fd) {
-    const type = fd.get('kind');
-    const idx = fd.get('idx');
-    const name = fd.get('name').trim();
-    const amount = num(fd.get('amount'));
-    const date = fd.get('date');
-    const cat = fd.get('cat');
-    const paid = fd.get('paid') === 'on';
-    const recur = fd.get('recur');
-    const scope = fd.get('scope') || 'all';
-    const count = Math.max(0, Math.round(num(fd.get('count'))));
-    const customInterval = Math.max(1, Math.round(num(fd.get('interval')) || 1));
-    const mo = monthObj();
-    const list = type === 'income' ? mo.income : mo.expenses;
-    const old = idx !== '' ? list[+idx] : null;
-    const row = old || {};
-    const k = key();
-
-    Object.assign(row, { name, amount, cat, paid, paidDate: paid ? today() : '', dueDate: type === 'income' ? '' : date });
-    if (idx === '') list.push(row);
-
-    if (recur !== 'once') {
-      let tpl = old?.templateId ? (budget.recurringTemplates || []).find(t => t.id === old.templateId) : null;
-      const interval = { monthly: 1, quarterly: 3, semiannual: 6, annual: 12, custom: customInterval, installments: 1 }[recur] || 1;
-      const installments = recur === 'installments' ? Math.max(2, count || 2) : 0;
-
-      if (!tpl) {
-        tpl = { id: uid('tpl'), kind: type, name, amount, cat, freq: 'everyN', interval, installments, startDate: date || `${k}-01`, dueDay: date ? +date.slice(-2) : 1, auto: false, skipMonths: [], overrides: {} };
-        budget.recurringTemplates.push(tpl);
-        row.templateId = tpl.id; row.recurring = true;
-      } else if (scope === 'only') {
-        tpl.overrides[k] = { name, amount, cat };
-        row.templateId = tpl.id; row.recurring = true;
-      } else if (scope === 'following') {
-        splitTemplateForward(tpl, k, { name, amount, cat, interval, installments });
-        row.templateId = null; row.recurring = false; // la ligne de ce mois redevient une occurrence normale du NOUVEAU template au prochain rendu
-        delete budget.monthlyData[k].expenses; // force la régénération propre depuis les templates pour ce mois
-        budget.monthlyData[k].expenses = (mo.expenses || []).filter(r => r !== row);
+    const type=fd.get('kind'),idx=fd.get('idx'),sourceType=fd.get('type')||type;
+    if (!['expense','income'].includes(type) || (idx!=='' && sourceType!==type)) throw Error('Pour changer de type, crée une nouvelle opération.');
+    const name=(fd.get('name')||'').trim(),amount=Number(fd.get('amount')),date=fd.get('date')||iso(year,month,1);
+    if(!name || !Number.isFinite(amount) || amount<0)throw Error('Saisis un libellé et un montant positif. Un remboursement se saisit comme revenu.');
+    if(date.slice(0,7)!==key())throw Error('La date doit appartenir au mois affiché. Change de période ou utilise Reporter.');
+    const cat=fd.get('cat'),paid=fd.get('paid')==='on',recur=fd.get('recur'),scope=fd.get('scope')||'all';
+    const count=Math.max(2,Math.round(num(fd.get('count')))||2),customInterval=Math.max(1,Math.round(num(fd.get('interval')))||1);
+    const mo=monthObj(),field=type==='income'?'income':'expenses',list=mo[field];
+    const row=idx!==''?list[+idx]:{};if(!row)throw Error('Opération introuvable.');
+    const tpl=row.templateId?(budget.recurringTemplates||[]).find(t=>t.id===row.templateId):null;
+    Object.assign(row,{name,amount:Core.money(amount),cat,paid,paidDate:paid?(row.paidDate||today()):'',dueDate:date});
+    if(idx==='')list.push(row);
+    if(recur==='once') {
+      if(tpl){tpl.skipMonths=tpl.skipMonths||[];if(!tpl.skipMonths.includes(key()))tpl.skipMonths.push(key());delete row.templateId;delete row.recurring;}
+    } else {
+      const interval={monthly:1,quarterly:3,semiannual:6,annual:12,custom:customInterval,installments:1}[recur];
+      if(!interval)throw Error('Récurrence invalide.');
+      let installments=recur==='installments'?count:0;
+      const values={kind:type,name,amount:Core.money(amount),cat,freq:'everyN',interval,installments,dueDay:+date.slice(-2)};
+      if(!tpl){const created={id:uid('tpl'),startDate:date,auto:false,skipMonths:[],overrides:{},...values};budget.recurringTemplates.push(created);row.templateId=created.id;row.recurring=true;}
+      else if(scope==='only'){tpl.overrides[key()]={name,amount:Core.money(amount),cat,dueDay:+date.slice(-2)};}
+      else if(scope==='following'){
+        if(recur==='installments' && count===num(tpl.installments)){const occ=occurrenceIndex({...tpl,endDate:null},key());values.installments=Math.max(1,count-(occ||0));}
+        const next=splitTemplateForward(tpl,key(),values);
+        Object.entries(budget.monthlyData).filter(([k])=>k>=key()).forEach(([k,m])=>{m[field]=(m[field]||[]).filter(r=>{
+          if(r.templateId!==tpl.id)return true;
+          if(r===row || r.paid){r.templateId=next.id;return true;}
+          return false;
+        });});
+        row.templateId=next.id;row.recurring=true;
       } else {
-        Object.assign(tpl, { name, amount, cat, freq: 'everyN', interval, installments, dueDay: date ? +date.slice(-2) : tpl.dueDay });
-        row.templateId = tpl.id; row.recurring = true;
+        Object.assign(tpl,values);
+        Object.entries(budget.monthlyData).forEach(([k,m])=>{m[field]=(m[field]||[]).filter(r=>r.templateId!==tpl.id||r===row||r.paid||occurrenceIndex(tpl,k)!=null);});
+        Object.entries(budget.monthlyData).forEach(([k,m])=>{(m[field]||[]).forEach(r=>{if(r.templateId!==tpl.id || r===row || r.paid || tpl.overrides?.[k])return;Object.assign(r,{name,amount:Core.money(amount),cat,dueDate:k+'-'+p2(Math.min(values.dueDay,lastDayOfMonth(+k.slice(0,4),+k.slice(5,7))))});});});
       }
-    } else if (row.templateId) {
-      const ti = budget.recurringTemplates.findIndex(t => t.id === row.templateId);
-      if (ti >= 0) budget.recurringTemplates.splice(ti, 1);
-      delete row.templateId; delete row.recurring;
     }
-    saveBudget(); closeSheet(); render();
+    Object.keys(budget.monthlyData).forEach(generateTemplates);
+    saveBudget();closeSheet();render();
   }
 
   function deleteTx() {
-    const form = $('#txForm'); const fd = new FormData(form);
-    const originalType = fd.get('type') || fd.get('kind');
-    const idx = +fd.get('idx');
-    const scope = fd.get('scope') || 'all';
-    const list = monthObj()[originalType === 'income' ? 'income' : 'expenses'];
-    const item = list[idx];
-    if (!item) return;
-    const tplId = item.templateId;
-    const question = tplId ? (scope === 'only' ? 'Supprimer uniquement cette occurrence ?' : scope === 'following' ? 'Supprimer cette occurrence et toutes les suivantes ?' : 'Supprimer toute la série récurrente ?') : 'Supprimer cette transaction ?';
-    if (!confirm(question)) return;
-    if (tplId) {
-      const tpl = budget.recurringTemplates.find(t => t.id === tplId);
-      if (scope === 'only' && tpl) {
-        tpl.skipMonths = tpl.skipMonths || []; tpl.skipMonths.push(key());
-        list.splice(idx, 1);
-      } else if (scope === 'following' && tpl) {
-        const prevKey = monthKeyAdd(key(), -1); const [py, pm] = prevKey.split('-').map(Number);
-        tpl.endDate = `${prevKey}-${p2(lastDayOfMonth(py, pm - 1))}`;
-        Object.keys(budget.monthlyData).filter(k => k >= key()).forEach(k => {
-          budget.monthlyData[k].income = (budget.monthlyData[k].income || []).filter(r => r.templateId !== tplId);
-          budget.monthlyData[k].expenses = (budget.monthlyData[k].expenses || []).filter(r => r.templateId !== tplId);
-        });
-      } else {
-        budget.recurringTemplates = (budget.recurringTemplates || []).filter(t => t.id !== tplId);
-        Object.values(budget.monthlyData || {}).forEach(m => { m.income = (m.income || []).filter(r => r.templateId !== tplId); m.expenses = (m.expenses || []).filter(r => r.templateId !== tplId); });
-      }
-    } else { list.splice(idx, 1); }
-    saveBudget(); closeSheet(); render();
+    const fd=new FormData($('#txForm')),type=fd.get('type')||fd.get('kind'),field=type==='income'?'income':'expenses',idx=+fd.get('idx'),scope=fd.get('scope')||'all';
+    const item=monthObj()[field][idx];if(!item)return;const tpl=budget.recurringTemplates.find(t=>t.id===item.templateId);
+    if(!confirm(tpl?'Arrêter cette récurrence pour la portée choisie ? Les opérations déjà réglées seront conservées (sauf suppression de cette occurrence uniquement).':'Supprimer cette opération ?'))return;
+    if(!tpl){monthObj()[field].splice(idx,1);}
+    else if(scope==='only'){tpl.skipMonths=tpl.skipMonths||[];if(!tpl.skipMonths.includes(key()))tpl.skipMonths.push(key());monthObj()[field].splice(idx,1);}
+    else {
+      if(scope==='following'){const prev=monthKeyAdd(key(),-1);tpl.endDate=prev+'-'+p2(lastDayOfMonth(+prev.slice(0,4),+prev.slice(5,7)));}
+      else budget.recurringTemplates=budget.recurringTemplates.filter(t=>t.id!==tpl.id);
+      Object.entries(budget.monthlyData).forEach(([k,m])=>{if(scope==='following'&&k<key())return;m[field]=(m[field]||[]).filter(r=>{if(r.templateId!==tpl.id)return true;if(r.paid){delete r.templateId;delete r.recurring;return true;}return false;});});
+    }
+    saveBudget();closeSheet();render();
   }
 
-  /* ---------------------------------------------------------------------
-     13. ÉVÉNEMENTS
-     ------------------------------------------------------------------- */
-  $('#nav').addEventListener('click', e => { const b = e.target.closest('[data-page]'); if (!b) return; page = b.dataset.page; if (page !== 'strategy') stratPreviewRate = null; render(); });
+  $('#nav').addEventListener('click', guard(e => { const b=e.target.closest('[data-page]');if(!b)return;page=b.dataset.page;if(page!=='strategy')stratPreviewRate=null;render(); }));
 
-  document.addEventListener('click', e => {
+  document.addEventListener('click', guard(e => {
     const tog = e.target.closest('[data-toggle]');
-    if (tog) { const arr = tog.dataset.toggle === 'income' ? monthObj().income : monthObj().expenses; const iidx = +tog.dataset.index; const item = arr[iidx]; if (item && !isAutoIncome(item)) { const kind = tog.dataset.toggle; item.paid = !item.paid; item.paidDate = item.paid ? today() : ''; const wasPaid = item.paid; saveBudget(); render(); toast(wasPaid ? (kind === 'income' ? '✓ Marqué reçu' : '✓ Marqué payé') : 'Repassé en prévu', () => { const a2 = kind === 'income' ? monthObj().income : monthObj().expenses; const it2 = a2[iidx]; if (it2) { it2.paid = !it2.paid; it2.paidDate = it2.paid ? today() : ''; saveBudget(); render(); } }); } return; }
+    if (tog) { const arr = tog.dataset.toggle === 'income' ? monthObj().income : monthObj().expenses; const iidx = +tog.dataset.index; const item = arr[iidx]; if (item) { const kind = tog.dataset.toggle; item.paid = !item.paid; item.paidDate = item.paid ? today() : ''; const wasPaid = item.paid; saveBudget(); render(); toast(wasPaid ? (kind === 'income' ? '✓ Marqué reçu' : '✓ Marqué payé') : 'Repassé en prévu', () => { const a2 = kind === 'income' ? monthObj().income : monthObj().expenses; const it2 = a2[iidx]; if (it2) { it2.paid = !it2.paid; it2.paidDate = it2.paid ? today() : ''; saveBudget(); render(); } }); } return; }
 
     const txv = e.target.closest('[data-tx-view]'); if (txv) { const v = txv.dataset.txView; txView = (v === 'paid') ? 'paid' : (v === 'all' ? 'due' : v); if (v === 'all') txQuick = 'all'; if (page !== 'transactions') { page = 'transactions'; } render(); return; }
     const txq = e.target.closest('[data-tx-quick]'); if (txq) { txQuick = txq.dataset.txQuick; render(); return; }
@@ -2915,8 +2957,8 @@
     const dup = e.target.closest('[data-dup-tx]'); if (dup) return duplicateExpense(dup.dataset.dupTx);
 
     if (e.target.closest('#bellBtn') || e.target.closest('[data-notification-center]')) return notificationCenter();
-    if (e.target.closest('[data-enable-notifications]')) { enableNotifications(); return; }
-    if (e.target.closest('[data-test-notifications]')) { maybeNotifyUpcomingExpenses(true); toast('Test des alertes lancé'); return; }
+    if (e.target.closest('[data-enable-notifications]')) return enableNotifications();
+    if (e.target.closest('[data-test-notifications]')) { if(window.ORION_NATIVE?.isNative)return window.ORION_NATIVE.testReminder();return maybeNotifyUpcomingExpenses(true); }
     if (e.target.closest('[data-disable-notifications]')) { notificationSettings().enabled = false; saveExtra(); closeSheet(); render(); toast('Alertes désactivées'); return; }
 
     const hx = e.target.closest('[data-home-explain]'); if (hx) return homeExplain(hx.dataset.homeExplain);
@@ -2925,6 +2967,12 @@
     if (e.target.closest('[data-home-glance]')) { const h = localStorage.getItem('orion_ui_glanceHidden') === '1'; try { localStorage.setItem('orion_ui_glanceHidden', h ? '0' : '1'); } catch {} render(); return; }
 
     const g = e.target.closest('[data-go]'); if (g) { page = g.dataset.go; if (page !== 'strategy') stratPreviewRate = null; closeSheet(); render(); return; }
+    if(e.target.closest('[data-setup]'))return setupSheet();
+    if(e.target.closest('[data-opening-balance]'))return openingBalanceSheet();
+    const carry=e.target.closest('[data-carry-balance]');if(carry){$('#openingForm [name=amount]').value=carry.dataset.carryBalance;return;}
+    if(e.target.closest('[data-add-income]'))return txForm('income');
+    if(e.target.closest('[data-envelopes]'))return envelopesSheet();
+    if(e.target.closest('[data-add-category]'))return openSheet('Ajouter une catégorie',`<form class="form" id="categoryForm"><label>Nom<input name="name" maxlength="60" required></label><button class="action">Ajouter</button></form>`);
     if (e.target.closest('[data-add-tx]')) return txForm();
     if (e.target.closest('[data-add-tx-install]')) return txForm('expense', '', true);
     if (e.target.closest('[data-open-birthday]')) return birthdayForm();
@@ -2944,7 +2992,7 @@
     const svmo = e.target.closest('[data-sv-mo]'); if (svmo) return savingsValidateSheet(svmo.dataset.svMo);
     const svq = e.target.closest('[data-sv-quick]'); if (svq) { const inp = $('#savingsValidateForm [name=amount]'); if (inp) inp.value = svq.dataset.svQuick; $$('.sv-quick button').forEach(b => b.classList.toggle('on', b === svq)); return; }
     const svn = e.target.closest('[data-sv-nothing]'); if (svn) { const k = svn.dataset.svNothing; const m = monthObj(k); svApplyAllocation(k, {}); m.savings = { amount: 0, paid: true, date: today(), planned: svPlanned(k), alloc: {} }; saveBudget(); closeSheet(); render(); toast('Mois marqué : rien épargné'); return; }
-    const svc = e.target.closest('[data-cancel-validation]'); if (svc) { const k = svc.dataset.cancelValidation; const m = budget.monthlyData[k]; if (m && m.savings) { svApplyAllocation(k, {}); const prev = { ...m.savings }; m.savings = { amount: 0, paid: false, date: '', planned: m.savings.planned }; saveBudget(); closeSheet(); render(); toast('Validation annulée', () => { m.savings = prev; svApplyAllocation(k, prev.alloc || {}); saveBudget(); render(); }); } return; }
+    const svc = e.target.closest('[data-cancel-validation]'); if (svc) { const k = svc.dataset.cancelValidation; const m = budget.monthlyData[k]; if (m && m.savings) { svApplyAllocation(k, {}); const prev = { ...m.savings }; m.savings = { amount: 0, paid: false, date: '', planned: m.savings.planned }; saveBudget(); closeSheet(); render(); toast('Validation annulée', () => { svApplyAllocation(k, prev.alloc || {}); m.savings = prev; saveBudget(); render(); }); } return; }
     const svac = e.target.closest('[data-sv-apply-catchup]'); if (svac) { extra.savingsCatchup = { total: savingsEngine(svYear).retardNet, perMonth: num(svac.dataset.permonth), months: +svac.dataset.svApplyCatchup, startKey: svRealKey() }; saveExtra(); closeSheet(); render(); toast('Plan de rattrapage activé'); return; }
     if (e.target.closest('[data-sv-clear-catchup]')) { extra.savingsCatchup = null; saveExtra(); closeSheet(); render(); toast('Plan de rattrapage annulé'); return; }
 
@@ -2954,8 +3002,9 @@
     if (e.target.closest('[data-edit-strategy]')) return strategyForm();
     if (e.target.closest('[data-add-pocket]')) { const p = { id: uid('pk'), name: 'Nouvelle poche', emoji: '💶', balance: 0, monthlyTarget: 0 }; extra.pockets.push(p); saveExtra(); pocketForm(p.id); return; }
     if (e.target.closest('[data-open-transfer]')) return transferForm();
+    const delBackup=e.target.closest('[data-delete-backup]');if(delBackup){if(confirm('Supprimer uniquement ce point historique ? Le budget actuel reste conservé. Exporte une copie si tu veux garder ce point.')){backups=backups.filter(b=>b.id!==delBackup.dataset.deleteBackup);saveBackups();render();}return;}
     if (e.target.closest('[data-make-backup]')) { snapshotNow('Sauvegarde manuelle', false); render(); return; }
-    if (e.target.closest('[data-restore-backup]')) { const id = e.target.closest('[data-restore-backup]').dataset.restoreBackup; if (confirm('Restaurer cette sauvegarde ? Ton état actuel sera lui aussi sauvegardé avant.')) { if (restoreSnapshot(id)) { alert('Sauvegarde restaurée. La page va se recharger.'); location.reload(); } } return; }
+    if (e.target.closest('[data-restore-backup]')) { const id = e.target.closest('[data-restore-backup]').dataset.restoreBackup; if (confirm('Restaurer cette sauvegarde ? Ton état actuel sera lui aussi sauvegardé avant.')) { if (restoreSnapshot(id)) afterCommit(()=>{alert('Sauvegarde restaurée.');location.reload();}); } return; }
     const anoe = e.target.closest('[data-an-open-exp]'); if (anoe) { const [y, mo] = anoe.dataset.anOpenExp.split('-').map(Number); year = y; month = mo - 1; saveBudget(); return txForm('expense', anoe.dataset.anOpenIdx); }
     const anp = e.target.closest('[data-an-period]'); if (anp) { anPeriod = anp.dataset.anPeriod; if (anPeriod === 'year' && anYear == null) anYear = year; anTip = null; render(); return; }
     const any = e.target.closest('[data-an-year]'); if (any) { anYear = (anYear || year) + (+any.dataset.anYear); render(); return; }
@@ -2964,7 +3013,7 @@
     const anc = e.target.closest('[data-an-cat]'); if (anc) return anCategorySheet(anc.dataset.anCat);
     const anm = e.target.closest('[data-an-month]'); if (anm) return anMonthSheet(anm.dataset.anMonth);
     const angm = e.target.closest('[data-an-goto-month]'); if (angm) { const [y, mo] = angm.dataset.anGotoMonth.split('-').map(Number); year = y; month = mo - 1; saveBudget(); closeSheet(); page = 'analysis'; render(); return; }
-    if (e.target.closest('[data-an-help]')) return openSheet('Comment lire l\'Analyse', `<div class="insight" style="margin-bottom:10px"><b style="color:var(--an-green)">Revenus</b> = argent réellement reçu (payé/auto).</div><div class="insight" style="margin-bottom:10px"><b style="color:var(--an-red)">Dépenses</b> = argent réellement payé (coché).</div><div class="insight" style="margin-bottom:10px"><b style="color:var(--an-blue)">Conservé</b> = revenus reçus − dépenses payées.</div><div class="insight"><b>Taux de conservation</b> = conservé ÷ revenus reçus. L'analyse utilise le <b>réel</b>, jamais le prévu, et n'invente aucun mois manquant.</div>`);
+    if (e.target.closest('[data-an-help]')) return openSheet('Comment lire l\'Analyse', `<div class="insight" style="margin-bottom:10px"><b style="color:var(--an-green)">Revenus</b> = argent réellement reçu (coché).</div><div class="insight" style="margin-bottom:10px"><b style="color:var(--an-red)">Dépenses</b> = argent réellement payé (coché).</div><div class="insight" style="margin-bottom:10px"><b style="color:var(--an-blue)">Conservé</b> = revenus reçus − dépenses payées.</div><div class="insight"><b>Taux de conservation</b> = conservé ÷ revenus reçus. L'analyse utilise le <b>réel</b>, jamais le prévu, et n'invente aucun mois manquant.</div>`);
 
     if (e.target.closest('[data-cat-detail]')) return categoryDetail(e.target.closest('[data-cat-detail]').dataset.catDetail);
     if (e.target.closest('[data-whatif-remove]')) return whatIfRemoveSheet(e.target.closest('[data-whatif-remove]').dataset.whatifRemove);
@@ -3012,11 +3061,12 @@
       return;
     }
     const inf = e.target.closest('[data-info]'); if (inf) return info(inf.dataset.info);
-  });
+  }));
 
-  $('#periodBtn').addEventListener('click', () => openSheet('Choisir la période', `<form class="form" id="periodForm"><label>Mois<select name="month">${ML.map((x, i) => `<option value="${i}" ${i === month ? 'selected' : ''}>${x}</option>`).join('')}</select></label><label>Année<input name="year" type="number" value="${year}"></label><button class="action">Afficher</button></form>`));
+  $('#periodBtn').addEventListener('click', guard(() => openSheet('Choisir la période', `<form class="form" id="periodForm"><label>Mois<select name="month">${ML.map((x, i) => `<option value="${i}" ${i === month ? 'selected' : ''}>${x}</option>`).join('')}</select></label><label>Année<input name="year" type="number" min="1900" max="2200" value="${year}"></label><button class="action">Afficher</button></form>`)));
   $('#sheetClose').onclick = closeSheet;
   $('#overlay').onclick = closeSheet;
+  document.addEventListener('keydown',e=>{if(!$('#sheet').classList.contains('open'))return;if(e.key==='Escape'){e.preventDefault();closeSheet();return;}if(e.key==='Tab'){const all=[...$('#sheet').querySelectorAll('button,input:not([type=hidden]),select,textarea,a')].filter(x=>!x.disabled&&x.getClientRects().length);const first=all[0],last=all[all.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus();}}});
 
   document.addEventListener('input', e => {
     if (e.target.id === 'whatifSavingsInput') { $('#whatifSavingsResult').innerHTML = whatIfSavingsText(num(e.target.value)); }
@@ -3030,9 +3080,12 @@
     if (e.target.id === 'txName') { const brandHint = document.querySelector('.brand-hint'); const b = brandOf(e.target.value, $('#txForm')?.cat?.value); if (brandHint) { if (b.matched) { brandHint.innerHTML = `<span class="brandmark ${b.cls}">${b.mark}</span> Reconnu : <b>${esc(b.label)}</b>`; brandHint.style.display = ''; } else brandHint.style.display = 'none'; } }
   });
 
-  document.addEventListener('submit', async e => {
+  document.addEventListener('submit', guard(async e => {
     e.preventDefault();
     const fd = new FormData(e.target);
+    if(e.target.id==='openingForm'){const amount=Number(fd.get('amount'));if(!Number.isFinite(amount))throw Error('Solde de départ invalide.');monthObj().meta={...monthObj().meta,openingBalance:Core.money(amount),balanceConfirmed:true};saveBudget();closeSheet();render();return;}
+    if(e.target.id==='envelopesForm'){const limits={};for(const [k,v]of fd.entries()){if(v==='')continue;if(!Number.isFinite(+v)||+v<0)throw Error('Limite de catégorie invalide.');limits[k]=Core.money(v);}monthObj().meta={...monthObj().meta,categoryBudgets:limits};saveBudget();closeSheet();render();return;}
+    if(e.target.id==='categoryForm'){const name=(fd.get('name')||'').trim();if(!name || /[<>]/.test(name))throw Error('Choisis un nom de catégorie sans balise HTML.');if(Object.values(CATS).some(n=>n.toLocaleLowerCase()===name.toLocaleLowerCase()))throw Error('Cette catégorie existe déjà.');extra.categories=extra.categories||[];extra.categories.push({id:uid('perso'),name});refreshCategories();saveExtra();envelopesSheet();return;}
     if (e.target.id === 'txForm') return saveTx(fd);
     if (e.target.id === 'emojiFreeForm') { setExpenseEmoji(fd.get('etype'), fd.get('eidx'), (fd.get('emoji') || '').trim()); return; }
     if (e.target.id === 'reportForm') { reportExpenseTo(fd.get('idx'), fd.get('date')); return; }
@@ -3079,7 +3132,8 @@
       saveExtra(); closeSheet(); render(); return;
     }
     if (e.target.id === 'transferForm') {
-      const from = extra.pockets.find(p => p.id === fd.get('from')); const to = extra.pockets.find(p => p.id === fd.get('to')); const amount = num(fd.get('amount'));
+      const from = extra.pockets.find(p => p.id === fd.get('from')); const to = extra.pockets.find(p => p.id === fd.get('to')); const amount = Core.money(fd.get('amount'));
+      if(from && amount>num(from.balance))throw Error('Le montant dépasse le solde de la poche source.');
       if (from && to && from !== to && amount > 0) { from.balance = num(from.balance) - amount; to.balance = num(to.balance) + amount; saveExtra(); }
       closeSheet(); render(); return;
     }
@@ -3090,53 +3144,45 @@
       const prev = m.savings ? { ...m.savings } : null;
       const alloc = pocketId ? { [pocketId]: amount } : {};
       svApplyAllocation(k, alloc); // idempotent : révoque l'ancienne affectation avant d'appliquer la nouvelle
-      m.savings = { amount, paid: true, date: fd.get('date') || today(), planned: svPlanned(k), alloc };
+      m.savings = { amount:Core.money(amount), paid:true, fromAccount:fd.get('fromAccount')==='on', date:fd.get('date')||today(), planned:svPlanned(k), alloc };
       saveBudget(); closeSheet(); render();
       toast(`Épargne de ${ML[+k.slice(5, 7) - 1].toLowerCase()} validée : ${eur(amount)}`, prev ? () => { svApplyAllocation(k, prev.alloc || {}); m.savings = prev; saveBudget(); render(); } : null);
       return;
     }
     if (e.target.id === 'monthlySavingForm') {
-      const m = monthObj(); const amount = Math.max(0, num(fd.get('amount')));
-      const pocketId = fd.get('pocket');
-      m.savings = { amount, paid: fd.get('paid') === 'on', date: fd.get('date') || '' };
-      if (pocketId) { const p = extra.pockets.find(x => x.id === pocketId); if (p) { p.balance = num(p.balance) + amount; saveExtra(); } }
-      saveBudget(); closeSheet(); render(); return;
+      const m=monthObj(),amount=Core.money(Math.max(0,num(fd.get('amount')))),paid=fd.get('paid')==='on',pid=fd.get('pocket'),alloc=paid&&pid?{[pid]:amount}:{};
+      svApplyAllocation(key(),alloc);m.savings={amount,paid,fromAccount:fd.get('fromAccount')==='on',date:fd.get('date')||'',alloc};
+      saveBudget();closeSheet();render();return;
     }
     if (e.target.id === 'exchangeForm') { const i = fd.get('idx'); const o = { name: fd.get('name').trim(), amount: num(fd.get('amount')), note: fd.get('note'), done: fd.get('done') === 'on' }; i === '' ? extra.exchanges.push(o) : extra.exchanges[+i] = o; saveExtra(); closeSheet(); render(); return; }
-    if (e.target.id === 'periodForm') { month = +fd.get('month'); year = +fd.get('year'); saveBudget(); closeSheet(); render(); return; }
+    if (e.target.id === 'periodForm') { if(!Number.isInteger(+fd.get('year'))||+fd.get('year')<1900||+fd.get('year')>2200)throw Error('Année invalide.'); month = +fd.get('month'); year = +fd.get('year'); saveBudget(); closeSheet(); render(); return; }
     if (e.target.id === 'importForm') {
-      const f = fd.get('file'); if (!f || !f.size) return;
-      const text = await f.text();
-      const obj = safeParse(text, null);
-      if (!isValidBackupPayload(obj)) { alert('Fichier invalide : import annulé, aucune donnée n’a été modifiée.'); return; }
-      snapshotNow('Avant import', true);
-      if (obj.budget) budget = runMigrations(obj.budget);
-      if (obj.goals) goals = obj.goals;
-      if (obj.extra) extra = { ...loadExtra(), ...obj.extra };
-      saveBudget(); saveGoals(); saveExtra();
-      closeSheet(); render();
-      alert('Import terminé.');
-      return;
+      const f=fd.get('file');if(!f||!f.size)throw Error('Choisis un fichier de sauvegarde.');
+      if(f.size>20*1024*1024)throw Error('Ce fichier dépasse 20 Mo. Aucune donnée remplacée.');
+      let obj;try{obj=Core.validateBackup(JSON.parse(await f.text()));}catch(error){throw Error(error.message.startsWith('Fichier incompatible')?error.message:'Fichier JSON invalide. Aucune donnée remplacée.');}
+      const summary=obj.budget?`${Object.keys(Core.normalizeBudget(obj.budget).monthlyData).length} mois`:'données complémentaires';
+      if(!confirm(`Importer ${summary} ? Une sauvegarde de l’état actuel sera conservée. Les données présentes dans le fichier remplaceront les rubriques correspondantes.`))return;
+      applyImport(obj);closeSheet();render();afterCommit(()=>alert('Import terminé. Historique de sauvegardes conservé.'));return;
     }
-  });
+  }));
 
-  document.addEventListener('click', e => {
+  document.addEventListener('click', guard(e => {
     if (e.target.closest('[data-delete-tx]')) return deleteTx();
     if (e.target.closest('[data-delete-birthday]')) { const i = +new FormData($('#birthdayForm')).get('idx'); if (confirm('Supprimer cet anniversaire ?')) { extra.birthdays.splice(i, 1); saveExtra(); syncCalendarExpenses(); closeSheet(); render(); toast('Anniversaire supprimé · dépense liée retirée'); } return; }
     if (e.target.closest('[data-delete-goal]')) { const id = new FormData($('#goalForm')).get('itemId'); if (confirm('Supprimer cet objectif ?')) { goals = goals.filter(g => g.id !== id); saveGoals(); closeSheet(); render(); } return; }
-    if (e.target.closest('[data-delete-pocket]')) { const id = new FormData($('#pocketForm')).get('itemId'); const p = extra.pockets.find(x => x.id === id); if (p && confirm(`Supprimer la poche « ${p.name} » ? Son solde (${eur(p.balance)}) sera transféré vers la première poche restante.`)) { extra.pockets = extra.pockets.filter(x => x.id !== id); if (extra.pockets.length) extra.pockets[0].balance = num(extra.pockets[0].balance) + num(p.balance); saveExtra(); closeSheet(); render(); } return; }
+    if (e.target.closest('[data-delete-pocket]')) { const id = new FormData($('#pocketForm')).get('itemId'); const p = extra.pockets.find(x => x.id === id); if(p && extra.pockets.length<2)throw Error('Conserve au moins une poche pour ne pas perdre son solde.'); if (p && confirm(`Supprimer la poche « ${p.name} » ? Son solde (${eur(p.balance)}) sera transféré vers la première poche restante.`)) { extra.pockets = extra.pockets.filter(x => x.id !== id); if (extra.pockets.length) extra.pockets[0].balance = Core.money(num(extra.pockets[0].balance) + num(p.balance)); const target=extra.pockets[0].id;Object.values(budget.monthlyData).forEach(m=>{if(m.savings?.alloc?.[id]!=null){m.savings.alloc[target]=Core.money(num(m.savings.alloc[target])+num(m.savings.alloc[id]));delete m.savings.alloc[id];}});goals.forEach(g=>{if(g.linkedPocketId===id)g.linkedPocketId=target;}); saveExtra(); closeSheet(); render(); } return; }
     if (e.target.closest('[data-delete-exchange]')) { const i = +new FormData($('#exchangeForm')).get('idx'); if (confirm('Supprimer cet échange ?')) { extra.exchanges.splice(i, 1); saveExtra(); closeSheet(); render(); } return; }
-  });
+  }));
 
-  document.addEventListener('change', e => {
+  document.addEventListener('change', guard(e => {
     if (e.target.id === 'mSel') { month = +e.target.value; saveBudget(); render(); }
-    if (e.target.id === 'ySel') { year = +e.target.value; saveBudget(); render(); }  });
+    if (e.target.id === 'ySel') { year = +e.target.value; saveBudget(); render(); }  }));
 
   // Swipe tactile léger sur une ligne de dépense (raccourci ; toutes les actions
   // restent accessibles via la fiche). Gauche = payer/annuler, droite = reporter.
   let _swX = null, _swY = null, _swEl = null;
   document.addEventListener('touchstart', e => { const row = e.target.closest && e.target.closest('.exp-row[data-swipe]'); if (!row) { _swEl = null; return; } const t = e.touches[0]; _swX = t.clientX; _swY = t.clientY; _swEl = row; }, { passive: true });
-  document.addEventListener('touchend', e => {
+  document.addEventListener('touchend', guard(e => {
     if (_swEl == null || _swX == null) return;
     const t = e.changedTouches[0]; const dx = t.clientX - _swX, dy = t.clientY - _swY;
     const row = _swEl; _swEl = null; _swX = null;
@@ -3146,7 +3192,7 @@
       const iidx = +idx; item.paid = !item.paid; item.paidDate = item.paid ? today() : ''; const wp = item.paid; saveBudget(); render();
       toast(wp ? '✓ Marqué payé' : 'Repassé en prévu', () => { const it = monthObj().expenses[iidx]; if (it) { it.paid = !it.paid; it.paidDate = it.paid ? today() : ''; saveBudget(); render(); } });
     } else if (!item.paid) { reportSheet(idx); } // droite → reporter
-  }, { passive: true });
+  }), { passive: true });
 
   window.addEventListener('error', e => console.error('Budget Orion', e.error || e.message));
 
@@ -3155,8 +3201,28 @@
   saveExtra();
   syncCalendarExpenses();
   render();
+  window.ORION_REMINDER_STATE=()=> {
+    const settings=clone(notificationSettings()),items=[];
+    const start=new Date();start.setHours(0,0,0,0);const end=new Date(start);end.setDate(end.getDate()+60);
+    for(let d=new Date(start.getFullYear(),start.getMonth(),1);d<=end;d=new Date(d.getFullYear(),d.getMonth()+1,1)){
+      const k=`${d.getFullYear()}-${p2(d.getMonth()+1)}`,m=clone(budget.monthlyData[k]||{income:[],expenses:[]});
+      (budget.recurringTemplates||[]).filter(t=>t.kind==='expense'&&occurrenceIndex(t,k)!=null).forEach(t=>{if(m.expenses.some(r=>r.templateId===t.id))return;const ov=t.overrides?.[k];m.expenses.push({name:ov?.name||t.name,templateId:t.id,paid:false,dueDate:k+'-'+p2(Math.min(num(ov?.dueDay??t.dueDay)||1,lastDayOfMonth(d.getFullYear(),d.getMonth())))});});
+      desiredCalendarExpensesForMonth(k).forEach(r=>{if(!m.expenses.some(x=>x.sourceEventId===r.sourceEventId&&x.sourceOccurrenceDate===r.sourceOccurrenceDate))m.expenses.push(r);});
+      m.expenses.filter(r=>!r.paid&&r.dueDate>=today()&&r.dueDate<=iso(end.getFullYear(),end.getMonth(),end.getDate())).forEach((r,i)=>items.push({id:(r.id||r.templateId||r.sourceEventId||r.name)+'|'+r.dueDate+'|'+i,date:r.dueDate}));
+    }
+    return {enabled:!!settings.enabled,leadDays:settings.leadDays,items};
+  };
   // Les notifications navigateur sont vérifiées à l'ouverture et au retour dans l'app.
   setTimeout(() => maybeNotifyUpcomingExpenses(false), 900);
   window.addEventListener('focus', () => maybeNotifyUpcomingExpenses(false));
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') maybeNotifyUpcomingExpenses(false); });
+  } catch(error) {
+    console.error('Budget Orion : ouverture interrompue',error);
+    const view=document.getElementById('view');view.replaceChildren();
+    const box=document.createElement('section');box.className='card';
+    const h=document.createElement('h2');h.textContent='Ouverture interrompue pour protéger tes données';
+    const text=document.createElement('p');text.textContent='Le stockage est incompatible ou indisponible. Aucun budget vide ne sera enregistré à sa place. Exporte les données brutes et conserve-les avant toute intervention.';
+    const btn=document.createElement('button');btn.className='action';btn.textContent='Exporter mes données brutes';btn.onclick=()=>{const data={};for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);data[k]=localStorage.getItem(k);}const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));a.download='orion-recuperation-brute.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),60000);};
+    box.append(h,text,btn);view.append(box);
+  }
 })();
