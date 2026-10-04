@@ -1062,21 +1062,35 @@
 
     $('#view').innerHTML = `<div class="stack">
       <section class="home-main">
-        <div class="home-cols">
-          <button class="home-col" data-home-explain="solde"><div class="lbl">Solde disponible <span class="home-i">i</span></div><div class="val">${eur(solde)}</div><div class="sub">Argent réellement dispo sur ton compte</div></button>
-          <button class="home-col center" data-home-explain="engage"><div class="lbl">Déjà engagé <span class="home-i">i</span></div><div class="val">${eur(engage)}</div><div class="sub">Prélèvements à venir et engagements</div></button>
-          <button class="home-col" data-home-explain="projection"><div class="lbl">Projection <span class="home-i">i</span></div><div class="val">${eur(projection)}</div><div class="sub">Estimation si rien ne change d’ici là</div></button>
+        <div class="home-fidelity-top">
+          <button class="home-fidelity-balance" data-home-explain="solde">
+            <span class="home-fidelity-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7H5a2 2 0 0 1 0-4h12v4M3 5v14a2 2 0 0 0 2 2h15V7"/><path d="M20 12h-5v5h5M16.5 14.5h.1"/></svg></span>
+            <span class="lbl">Solde disponible <span class="home-i">i</span></span>
+            <span class="val">${eur(solde)}</span>
+            <span class="sub">Argent réellement dispo sur ton compte</span>
+          </button>
+          <div class="home-fidelity-summary">
+            <button class="home-fidelity-ring" data-home-explain="engage" aria-label="${paidPct}% des dépenses prévues réglées. Voir le détail des dépenses.">
+              <svg viewBox="0 0 100 100" aria-hidden="true"><circle class="ring-track" cx="50" cy="50" r="42"/><circle class="ring-paid" cx="50" cy="50" r="42" pathLength="100" stroke-dasharray="${paidPct} 100"/></svg>
+              <span><b>${paidPct}%</b><small>dépenses<br>réglées</small></span>
+            </button>
+            <div class="home-fidelity-metrics">
+              <button data-home-explain="revenus"><span class="metric-dot income"></span><span>Revenus</span><b>${eur(t.pin)}</b></button>
+              <button data-home-explain="engage"><span class="metric-dot expense"></span><span>Dépenses</span><b>${eur(engage)}</b></button>
+              <button data-home-explain="projection"><span class="metric-dot forecast"></span><span>Projection</span><b>${eur(projection)}</b></button>
+            </div>
+          </div>
         </div>
-        <div class="home-barwrap">
+        <div class="home-split">
+          <button data-home-topay><div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18M8 15h.01M12 15h.01M16 15h.01M8 18h.01M12 18h.01"/></svg></div><div><div class="s-lbl">À payer avant le ${last} ${ML[month].toLowerCase()}</div><div class="s-val">${eur(aPayer)}</div></div><div class="chev">›</div></button>
+          <div class="sep"></div>
+          <button data-edit-period><div class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><div><div class="s-lbl">Jours restants dans le mois</div><div class="s-val">${jours} jour${jours > 1 ? 's' : ''}</div></div><div class="chev">›</div></button>
+        </div>
+        <div class="home-barwrap" role="img" aria-label="${paidPct}% des dépenses prévues réglées">
           <div class="home-bubble" style="left:${bubbleLeft}%">${paidPct}%</div>
           <div class="home-bar"><span class="paid" style="width:${paidPct}%"></span><span class="rest" style="width:${100 - paidPct}%"></span></div>
         </div>
         <div class="home-barrow"><span class="d1">Revenus reçus ${eur(t.pin)}</span><span class="d2">Dépenses prévues ${eur(t.tex)}</span></div>
-        <div class="home-split">
-          <button data-home-topay><div class="ic">▤</div><div><div class="s-lbl">À payer avant le ${last} ${ML[month].toLowerCase()}</div><div class="s-val">${eur(aPayer)}</div></div><div class="chev">›</div></button>
-          <div class="sep"></div>
-          <button data-edit-period><div class="ic">▦</div><div><div class="s-lbl">Jours restants dans le mois</div><div class="s-val">${jours} jour${jours > 1 ? 's' : ''}</div></div><div class="chev">›</div></button>
-        </div>
       </section>
 
       <section class="home-quick">
